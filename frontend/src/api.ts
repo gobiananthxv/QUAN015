@@ -80,8 +80,13 @@ export interface BacktestStats extends Summary {
   total_commission: Num
   total_slippage: Num
   total_borrow: Num
+  total_financing: Num
+  total_rebalances: Num
   exposure: Num
   avg_bars_held: Num
+  /** Average target exposure while invested. 1.0 is fully invested, above that is borrowed. */
+  avg_leverage: Num
+  max_leverage: Num
 }
 
 export interface Curves {
@@ -97,11 +102,14 @@ export interface Trade {
   exit_date: string | null
   direction: string
   units: Num
+  max_units: Num
+  rebalances: number
   entry_price: Num
   exit_price: Num
   commission: Num
   slippage: Num
   borrow: Num
+  financing: Num
   costs: Num
   gross_pnl: Num
   net_pnl: Num
@@ -129,6 +137,10 @@ export interface BacktestConfig {
   allow_short: boolean
   /** Annual borrow fee charged per bar while a short is open. */
   borrow_bps_annual: number
+  /** Annual interest on borrowed cash, charged whenever exposure exceeds 100%. */
+  financing_bps_annual: number
+  /** Minimum change in target exposure, relative to what is held, before trading. */
+  no_trade_band: number
 }
 
 export const DEFAULT_CONFIG: BacktestConfig = {
@@ -138,6 +150,8 @@ export const DEFAULT_CONFIG: BacktestConfig = {
   position_pct: 1,
   allow_short: false,
   borrow_bps_annual: 50,
+  financing_bps_annual: 500,
+  no_trade_band: 0.1,
 }
 
 /** Backtest window. Omitting both ends means the full history. */

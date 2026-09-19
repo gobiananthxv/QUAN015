@@ -72,9 +72,25 @@ def main() -> int:
                 warnings.append(f"{key}/{name}: equity curve disagrees with trade log")
             if (res.equity <= 0).any():
                 warnings.append(f"{key}/{name}: equity went non-positive")
-            expected = np.concatenate([[0], np.sign(res.signals.to_numpy()[:-1])])
-            if not np.array_equal(res.position.to_numpy(), expected):
+            # The position held on bar t must be the target the strategy asked
+            # for on bar t-1 — never bar t's, which it could not have known.
+            # Direction has to match exactly: entries, exits and flips are
+            # always executed. Size may sit inside the no-trade band, which is
+            # the one thing allowed to hold a position away from its target.
+            lagged = np.concatenate([[0.0], res.signals.to_numpy()[:-1]])
+            position = res.position.to_numpy()
+            if not np.array_equal(np.sign(position), np.sign(lagged)):
                 warnings.append(f"{key}/{name}: execution lag is not exactly one bar")
+            # The band is measured against the position held, so the tolerance
+            # is too. Anything beyond it means a rebalance was skipped that
+            # should have happened.
+            slack = cfg.no_trade_band + 2 * cfg.slippage_bps * 1e-4
+            drift = np.abs(position - lagged) - slack * np.abs(position)
+            if drift.max() > 1e-9:
+                warnings.append(
+                    f"{key}/{name}: position sits {drift.max():.4f} further from its "
+                    f"target than the {slack:.2%} band allows"
+                )
             if s["num_trades"] == 0 and s["num_open_trades"] == 0:
                 warnings.append(f"{key}/{name}: never traded")
 

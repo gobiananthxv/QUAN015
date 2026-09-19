@@ -520,3 +520,283 @@ def test_sizing_a_strategy_down_makes_it_lose_more_to_the_benchmark():
     full = run_backtest(df, signals, "NVDA", config=BacktestConfig(position_pct=1.0))
     half = run_backtest(df, signals, "NVDA", config=BacktestConfig(position_pct=0.5))
     assert half.stats()["total_return"] < full.stats()["total_return"] < bench * 1.01
+
+
+# ==================================================== continuous position sizing
+
+
+def test_a_fractional_target_deploys_that_fraction_of_equity():
+    """A signal of 0.5 means "half invested", the same thing position_pct=0.5
+    has always meant. The difference is that the strategy now decides it, bar
+    by bar, instead of it being a fixed account setting."""
+    df = frame(opens=[100, 100, 200, 200], closes=[100, 100, 200, 200])
+    res = run_backtest(df, sig([0.5, 0.5, 0.5, 0.5], df), "GOLD", config=FREE)
+
+    assert res.trades[0].units == pytest.approx(50.0)  # 5_000 / 100
+    # 5_000 cash + 50 units doubling from 100 to 200. The target never changes,
+    # so the position is never revisited and never trimmed on the way up.
+    assert res.equity.iloc[-1] == pytest.approx(15_000.0)
+
+
+def test_leverage_borrows_cash_and_amplifies_the_move():
+    """A target above 1.0 buys more than the account holds. At 2x exposure a
+    +10% move in the asset must produce +20% on equity."""
+    df = frame(opens=[100, 100, 110, 110], closes=[100, 100, 110, 110])
+    cfg = BacktestConfig(initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+                         financing_bps_annual=0.0)
+    res = run_backtest(df, sig([2.0, 2.0, 2.0, 2.0], df), "GOLD", config=cfg)
+
+    assert res.trades[0].units == pytest.approx(200.0)  # 20_000 / 100
+    # 200 units gaining 10 each is +2_000 on a 10_000 account.
+    assert res.equity.iloc[-1] == pytest.approx(12_000.0)
+
+
+def test_the_position_is_rebalanced_when_the_target_changes():
+    df = frame(opens=[100, 100, 100, 100], closes=[100, 100, 100, 100])
+    res = run_backtest(df, sig([1.0, 0.5, 0.5, 0.5], df), "GOLD", config=FREE)
+
+    # Flat prices, so equity stays at 10_000 and the trim is exact.
+    assert len(res.trades) == 1
+    trade = res.trades[0]
+    assert trade.is_open
+    assert trade.rebalances == 1
+    assert trade.max_units == pytest.approx(100.0)
+    assert res.position.iloc[-1] == pytest.approx(0.5)
+    assert res.equity.iloc[-1] == pytest.approx(10_000.0)
+
+
+def test_gross_pnl_survives_a_position_that_was_resized_midway():
+    """Entry-price arithmetic cannot describe a trade that was topped up at a
+    different price; the shadow reference account can.
+
+    Buy 100 units at 100, add 100 more at 50, sell all 200 at 80. Outlay is
+    10_000 + 5_000 = 15_000, proceeds are 16_000, so gross P&L is +1_000 and
+    nothing about entry price alone would tell you that.
+    """
+    df = frame(opens=[100, 100, 50, 80, 80], closes=[100, 100, 50, 80, 80])
+    cfg = BacktestConfig(initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+                         financing_bps_annual=0.0)
+    # Bar 1 fills 1.0: 100 units of a 10_000 account at 100.
+    # Bar 2 fills 2.0 at 50: equity has halved to 5_000, so 2x is 200 units.
+    # Bar 3 goes flat at 80.
+    res = run_backtest(df, sig([1.0, 2.0, 0.0, 0.0, 0.0], df), "GOLD", config=cfg)
+
+    closed = [t for t in res.trades if not t.is_open]
+    assert len(closed) == 1
+    assert closed[0].gross_pnl == pytest.approx(1_000.0)
+    assert closed[0].net_pnl == pytest.approx(1_000.0)  # costs are switched off
+    assert closed[0].rebalances == 1
+
+
+def test_discrete_signals_are_unaffected_by_the_sizing_machinery():
+    """The four directional strategies must behave exactly as they did before
+    continuous sizing existed: sign-only targets, one leg per trade."""
+    df = load_asset("NVDA")
+    res = run_backtest(df, pd.Series(1.0, index=df.index), "NVDA")
+    assert set(res.position.unique()) <= {0.0, 1.0}
+    assert all(t.rebalances == 0 for t in res.trades)
+
+
+# ================================================================ financing
+
+
+def test_borrowed_cash_accrues_interest():
+    df = frame(opens=[100] * 6, closes=[100] * 6)
+    levered = BacktestConfig(initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+                             financing_bps_annual=500.0)
+    res = run_backtest(df, sig([1.5] * 6, df), "GOLD", config=levered)
+
+    # 1.5x on 10_000 borrows 5_000. The price never moves, so every penny lost
+    # is interest and equity must fall monotonically.
+    assert res.equity.iloc[-1] < 10_000.0
+    assert res.trades[0].financing > 0
+    assert (res.equity.diff().dropna() <= 0).all()
+
+
+def test_financing_is_not_charged_to_an_unlevered_position():
+    """Cash is exactly zero at 100% exposure, so there is nothing to charge."""
+    df = frame(opens=[100] * 6, closes=[100] * 6)
+    cfg = BacktestConfig(initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+                         financing_bps_annual=500.0)
+    res = run_backtest(df, sig([1.0] * 6, df), "GOLD", config=cfg)
+    assert res.trades[0].financing == 0.0
+    assert res.equity.iloc[-1] == pytest.approx(10_000.0)
+
+
+def test_financing_uses_the_calendar_of_the_asset_being_traded():
+    """Crypto compounds over 365 bars a year and equities over 252, so the same
+    annual rate has to cost less per bar on BTC.
+
+    Two bars, so the signal lag leaves exactly one bar holding the position and
+    exactly one interest charge. Over a longer run the charges compound and the
+    ratio drifts off 252/365, which would make the arithmetic here approximate
+    rather than exact.
+    """
+    df = frame(opens=[100, 100], closes=[100, 100])
+    cfg = BacktestConfig(initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+                         financing_bps_annual=1000.0)
+    # 1.5x on 10_000 borrows 5_000 at 10% a year.
+    equity = run_backtest(df, sig([1.5, 1.5], df), "NVDA", config=cfg).trades[0].financing
+    crypto = run_backtest(df, sig([1.5, 1.5], df), "BTC", config=cfg).trades[0].financing
+    assert equity == pytest.approx(5_000 * 0.10 / 252)
+    assert crypto == pytest.approx(5_000 * 0.10 / 365)
+
+
+def test_a_zero_financing_rate_makes_leverage_free():
+    df = frame(opens=[100] * 6, closes=[100] * 6)
+    cfg = BacktestConfig(initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+                         financing_bps_annual=0.0)
+    res = run_backtest(df, sig([1.5] * 6, df), "GOLD", config=cfg)
+    assert res.equity.iloc[-1] == pytest.approx(10_000.0)
+
+
+def test_financing_makes_a_levered_run_strictly_worse():
+    """The point of charging for leverage is that it changes the answer."""
+    df = load_asset("NVDA")
+    signals = pd.Series(1.5, index=df.index)
+    free = run_backtest(df, signals, "NVDA", config=BacktestConfig(financing_bps_annual=0.0))
+    paid = run_backtest(df, signals, "NVDA", config=BacktestConfig(financing_bps_annual=500.0))
+    assert paid.stats()["total_return"] < free.stats()["total_return"]
+    assert paid.stats()["total_financing"] > 0
+
+
+# ============================================================ no-trade band
+
+
+def test_the_band_suppresses_a_small_rebalance():
+    """A 20% band must ignore a target moving from 1.00 to 0.95."""
+    df = frame(opens=[100] * 5, closes=[100] * 5)
+    cfg = BacktestConfig(initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+                         no_trade_band=0.20)
+    res = run_backtest(df, sig([1.0, 0.95, 0.95, 0.95, 0.95], df), "GOLD", config=cfg)
+    assert res.trades[0].rebalances == 0
+    assert res.position.iloc[-1] == pytest.approx(1.0)
+
+
+def test_the_band_still_lets_a_large_rebalance_through():
+    df = frame(opens=[100] * 5, closes=[100] * 5)
+    cfg = BacktestConfig(initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+                         no_trade_band=0.20)
+    res = run_backtest(df, sig([1.0, 0.5, 0.5, 0.5, 0.5], df), "GOLD", config=cfg)
+    assert res.trades[0].rebalances == 1
+    assert res.position.iloc[-1] == pytest.approx(0.5)
+
+
+def test_the_band_never_suppresses_an_exit():
+    """Trimming is optional; getting out is not. A target of zero has to be
+    executed however wide the band is."""
+    df = frame(opens=[100] * 5, closes=[100] * 5)
+    cfg = BacktestConfig(initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+                         no_trade_band=0.99)
+    res = run_backtest(df, sig([1.0, 1.0, 0.0, 0.0, 0.0], df), "GOLD", config=cfg)
+    assert res.position.iloc[-1] == 0.0
+    assert len([t for t in res.trades if not t.is_open]) == 1
+
+
+def test_the_band_never_suppresses_a_flip():
+    df = frame(opens=[100] * 5, closes=[100] * 5)
+    cfg = BacktestConfig(initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+                         no_trade_band=0.99, allow_short=True)
+    res = run_backtest(df, sig([1.0, 1.0, -1.0, -1.0, -1.0], df), "GOLD", config=cfg)
+    assert res.position.iloc[-1] == pytest.approx(-1.0)
+
+
+def test_a_wider_band_means_far_fewer_rebalances_on_real_data():
+    from app.backtest.strategies import get_strategy
+
+    df = load_asset("NVDA")
+    signals = get_strategy("vol_target", asset="NVDA").generate_signals(df)
+    tight = run_backtest(df, signals, "NVDA", config=BacktestConfig(no_trade_band=0.0))
+    loose = run_backtest(df, signals, "NVDA", config=BacktestConfig(no_trade_band=0.20))
+    assert loose.stats()["total_rebalances"] < tight.stats()["total_rebalances"] / 2
+
+
+def test_the_benchmark_ignores_the_no_trade_band():
+    """The band is a strategy setting. A benchmark that moved when you changed
+    one would not be a fixed reference point."""
+    df = load_asset("GOLD")
+    plain = buy_and_hold(df, "GOLD", BacktestConfig(no_trade_band=0.0)).stats()["total_return"]
+    banded = buy_and_hold(df, "GOLD", BacktestConfig(no_trade_band=0.35)).stats()["total_return"]
+    assert banded == pytest.approx(plain)
+
+
+# ============================================ regressions found by the reports
+
+
+def test_slippage_never_favours_a_rebalance():
+    """Regression. Sizing divides by (1 + commission), which can push the target
+    below the units already held even when the position is being *widened* in
+    exposure terms — so a trade predicted to be a buy turns out to be a sell.
+    Picking the fill from the prediction then paid the trade slippage instead of
+    charging it. The fill is now chosen so it is consistent with the trade that
+    actually happens.
+
+    The symptom was a silent one: equity drifted away from the trade log by
+    about 0.001% over a decade, which no eyeball would catch. The identity below
+    is what caught it.
+    """
+    from app.backtest.strategies import get_strategy
+
+    df = load_asset("NVDA")
+    signals = get_strategy("vol_target", asset="NVDA").generate_signals(df)
+
+    for band in (0.0, 0.10):
+        cfg = BacktestConfig(no_trade_band=band)
+        res = run_backtest(df, signals, "NVDA", config=cfg)
+        net = sum(t.net_pnl for t in res.trades)
+        assert res.equity.iloc[-1] == pytest.approx(cfg.initial_capital + net, abs=1e-6), (
+            f"equity disagrees with the trade log at band={band}"
+        )
+
+
+def test_every_fill_is_worse_than_the_open_it_was_taken_at():
+    """The engine's promise, stated directly: a buy fills above the printed open
+    and a sell fills below it, on every leg of every trade."""
+    from app.backtest.strategies import get_strategy
+
+    df = load_asset("BTC")
+    signals = get_strategy("vol_target", asset="BTC").generate_signals(df)
+    res = run_backtest(df, signals, "BTC", config=BacktestConfig(slippage_bps=25.0))
+
+    for t in res.trades:
+        assert t.entry_price > t.ref_entry, "an entry filled at or below the open"
+        if t.exit_price is not None:
+            assert t.exit_price < t.ref_exit, "an exit filled at or above the open"
+        # Slippage is a cost, so it is always positive and never a rebate.
+        assert t.slippage > 0
+
+
+def test_position_tracks_the_lagged_target_exactly_when_there_is_no_band():
+    """Regression. `position` reports the target the engine sized to. When a
+    rebalance was skipped because the units held already matched the target, the
+    bar kept the *previous* target as its label and misreported what was held by
+    up to 6%. With no band there is nothing left to excuse a difference."""
+    from app.backtest.strategies import get_strategy
+
+    for asset in ("GOLD", "BTC", "NVDA"):
+        df = load_asset(asset)
+        signals = get_strategy("vol_target", asset=asset).generate_signals(df)
+        res = run_backtest(df, signals, asset, config=BacktestConfig(no_trade_band=0.0))
+
+        lagged = np.concatenate([[0.0], res.signals.to_numpy()[:-1]])
+        assert res.position.to_numpy() == pytest.approx(lagged, abs=1e-9), asset
+
+
+def test_the_band_is_the_only_thing_that_holds_a_position_off_target():
+    """And it holds it off target by no more than the band allows.
+
+    The band is measured against the position *held*, not the target, so the
+    tolerance is too — a 10% band around a holding of 1.0 covers a target of
+    0.9, which is 11.1% away when measured the other way round.
+    """
+    from app.backtest.strategies import get_strategy
+
+    df = load_asset("NVDA")
+    signals = get_strategy("vol_target", asset="NVDA").generate_signals(df)
+    cfg = BacktestConfig(no_trade_band=0.10)
+    res = run_backtest(df, signals, "NVDA", config=cfg)
+
+    lagged = np.concatenate([[0.0], res.signals.to_numpy()[:-1]])
+    position = res.position.to_numpy()
+    allowed = (cfg.no_trade_band + 2 * cfg.slippage_bps * 1e-4) * np.abs(position)
+    assert (np.abs(position - lagged) <= allowed + 1e-9).all()

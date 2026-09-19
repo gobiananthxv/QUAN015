@@ -74,7 +74,7 @@ def run_strategy(
     frame = load_asset(asset) if df is None else df
     if start or end:
         frame = window(frame, start, end)
-    strat = get_strategy(strategy_name, params)
+    strat = get_strategy(strategy_name, params, asset=asset)
     signals = strat.generate_signals(frame)
     return run_backtest(
         frame, signals, asset, strategy=strategy_name, params=strat.params, config=config
@@ -111,7 +111,7 @@ def parameter_sweep(
     for combo in itertools.product(*(grid[n] for n in names)):
         params = dict(zip(names, combo))
         try:
-            strat = get_strategy(strategy_name, params)
+            strat = get_strategy(strategy_name, params, asset=asset)
         except ValueError:
             continue  # invalid corner of the grid
         res = run_backtest(
@@ -294,7 +294,7 @@ def period_sweep(
     df = load_asset(asset)
     if start or end:
         df = window(df, start, end)
-    strat = get_strategy(strategy_name, params)
+    strat = get_strategy(strategy_name, params, asset=asset)
     bounds = np.linspace(0, len(df), n_windows + 1).astype(int)
 
     rows = []

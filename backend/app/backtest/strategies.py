@@ -20,7 +20,8 @@ from typing import ClassVar
 
 import pandas as pd
 
-from ..analytics.indicators import bollinger, ema, roc, sma
+from ..config import get_asset
+from ..analytics.indicators import bollinger, ema, realised_vol, roc, sma
 
 
 @dataclass
@@ -216,20 +217,107 @@ class MeanReversion(Strategy):
         return self._hold(entry, exit_, df.index)
 
 
+@dataclass
+class VolatilityTarget(Strategy):
+    """Always invested, but never at a constant size.
+
+    Every other strategy in this registry answers "am I in or out?". This one
+    answers "how much?", which is the question that actually moves risk-adjusted
+    return. Target exposure is
+
+        scale = clip(target_vol / realised_vol, floor, cap)
+
+    so the position shrinks when the market gets turbulent and grows when it
+    calms down. Two consequences are worth stating plainly:
+
+    * **It never goes flat.** Analysis of this dataset found 84-90% of the
+      equity and gold return arrives overnight, while the market is shut; a
+      strategy that sits in cash to avoid volatility forfeits that drift. Sizing
+      down keeps you invested through the recovery you cannot time.
+    * **``cap`` above 1.0 means borrowing.** Capping at 1.0 leaves the strategy
+      systematically under-invested in calm markets, which costs return. Letting
+      it lever up restores that, and the engine charges
+      ``financing_bps_annual`` on the borrowed cash for as long as it is held.
+      Whether the edge survives the funding cost is a question about your broker,
+      not about the strategy, which is why the rate is an adjustable input.
+
+    The target is continuous, so it would rebalance every bar if allowed to.
+    Pair it with the engine's ``no_trade_band`` — a 10% band cut turnover by
+    roughly a quarter in testing.
+
+    The defaults are round numbers chosen for legibility, not tuned. Phase 5's
+    robustness sweep decides whether they sit on a plateau or a spike, and the
+    verdict it returns is the one this project reports.
+    """
+
+    name: ClassVar[str] = "vol_target"
+    label: ClassVar[str] = "Volatility Target"
+    description: ClassVar[str] = (
+        "Always invested, sized inversely to recent volatility: smaller in "
+        "turbulent markets, larger in calm ones, within a floor and a cap."
+    )
+    defaults: ClassVar[dict] = {
+        "vol_window": 20,
+        "target_vol": 0.25,
+        "cap": 2.0,
+        "floor": 0.2,
+        "ann_factor": 252,
+    }
+
+    def validate(self) -> None:
+        if self.params["vol_window"] < 2:
+            raise ValueError("vol_window must be at least 2")
+        if self.params["target_vol"] <= 0:
+            raise ValueError("target_vol must be positive")
+        if self.params["floor"] < 0:
+            raise ValueError("floor must not be negative")
+        if self.params["cap"] <= 0:
+            raise ValueError("cap must be positive")
+        if self.params["cap"] < self.params["floor"]:
+            raise ValueError("cap must be at least floor")
+        if self.params["ann_factor"] < 1:
+            raise ValueError("ann_factor must be at least 1")
+
+    def generate_signals(self, df: pd.DataFrame) -> pd.Series:
+        vol = realised_vol(df["close"], self.params["vol_window"], self.params["ann_factor"])
+        # Before the window is full there is no volatility estimate and
+        # therefore no defensible size, so the strategy stays flat rather than
+        # guessing. A zero reading (a run of identical closes) would divide to
+        # infinity, so it is treated as "no estimate" too.
+        scale = (self.params["target_vol"] / vol.where(vol > 0)).clip(
+            lower=self.params["floor"], upper=self.params["cap"]
+        )
+        return scale.fillna(0.0).astype("float64")
+
+
 # ---------------------------------------------------------------------------
 
 REGISTRY: dict[str, type[Strategy]] = {
-    cls.name: cls for cls in (SmaCrossover, EmaTrend, Momentum, MeanReversion)
+    cls.name: cls for cls in (SmaCrossover, EmaTrend, Momentum, MeanReversion, VolatilityTarget)
 }
 
+# Parameters that describe the *asset's* calendar rather than the strategy's
+# behaviour. When the caller knows which asset is being traded, these are filled
+# in from the registry so a BTC backtest is not annualised on an equity year.
+CALENDAR_PARAMS = {"ann_factor"}
 
-def get_strategy(name: str, params: dict | None = None) -> Strategy:
-    """Build a strategy by name. Raises KeyError on an unknown name."""
+
+def get_strategy(name: str, params: dict | None = None, asset: str | None = None) -> Strategy:
+    """Build a strategy by name. Raises KeyError on an unknown name.
+
+    ``asset`` supplies calendar defaults (see :data:`CALENDAR_PARAMS`). An
+    explicit value in ``params`` always wins, so the sweeps can still vary it.
+    """
     try:
         cls = REGISTRY[name]
     except KeyError:
         raise KeyError(f"Unknown strategy '{name}'. Known: {', '.join(REGISTRY)}") from None
-    return cls(params=params or {})
+
+    merged = dict(params or {})
+    if asset is not None:
+        for key in CALENDAR_PARAMS & set(cls.defaults):
+            merged.setdefault(key, get_asset(asset).ann_factor)
+    return cls(params=merged)
 
 
 def list_strategies() -> list[dict]:

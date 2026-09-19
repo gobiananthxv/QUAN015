@@ -2,7 +2,7 @@
 
 Each strategy is checked against a price path constructed so the right answer
 is known in advance, then against the two properties every strategy must have:
-causality, and signals confined to the legal alphabet.
+causality, and signals confined to a sane exposure range.
 """
 from __future__ import annotations
 
@@ -17,12 +17,16 @@ from app.backtest.strategies import (
     Momentum,
     SmaCrossover,
     Strategy,
+    VolatilityTarget,
     get_strategy,
     list_strategies,
 )
 from app.data.store import load_asset
 
 ALL = list(REGISTRY)
+# Strategies that answer "in or out?". The fifth one answers "how much?", so it
+# is excluded wherever a test asserts the discrete alphabet.
+DISCRETE = [n for n in ALL if n != "vol_target"]
 
 
 def frame_from(closes, start="2020-01-01") -> pd.DataFrame:
@@ -43,13 +47,24 @@ def frame_from(closes, start="2020-01-01") -> pd.DataFrame:
 # ================================================================ contract
 
 
-@pytest.mark.parametrize("name", ALL)
-def test_signals_only_contain_legal_values(name):
-    """The engine interprets anything outside {-1, 0, 1} by sign; emitting
-    something else means the strategy is not saying what it thinks it is."""
+@pytest.mark.parametrize("name", DISCRETE)
+def test_discrete_signals_only_contain_legal_values(name):
+    """A directional strategy says in, out or short and nothing in between;
+    emitting something else means it is not saying what it thinks it is."""
     df = load_asset("NVDA")
     values = set(get_strategy(name).generate_signals(df).unique())
     assert values <= {-1.0, 0.0, 1.0}, f"{name} emitted {values}"
+
+
+@pytest.mark.parametrize("name", ALL)
+def test_signals_are_finite_and_bounded(name):
+    """Whatever a strategy asks for, the engine will size to it literally. An
+    infinite or absurd target would be executed, so the contract every strategy
+    shares is that the number is finite and within a defensible range."""
+    df = load_asset("NVDA")
+    sig = get_strategy(name, asset="NVDA").generate_signals(df)
+    assert np.isfinite(sig.to_numpy()).all(), f"{name} emitted a non-finite target"
+    assert sig.abs().max() <= 3.0, f"{name} asked for {sig.abs().max():.2f}x exposure"
 
 
 @pytest.mark.parametrize("name", ALL)
@@ -343,7 +358,10 @@ def test_mean_reversion_rejects_non_positive_entry_z():
 
 
 def test_registry_contains_the_four_required_strategies():
-    assert set(REGISTRY) == {"sma_crossover", "ema_trend", "momentum", "mean_reversion"}
+    """The brief asks for at least three; four directional ones ship, plus a
+    fifth that sizes rather than times."""
+    assert {"sma_crossover", "ema_trend", "momentum", "mean_reversion"} <= set(REGISTRY)
+    assert "vol_target" in REGISTRY
 
 
 def test_get_strategy_rejects_unknown_names():
@@ -368,7 +386,7 @@ def test_unknown_params_are_discarded_not_silently_honoured():
 
 def test_list_strategies_is_api_ready():
     listed = list_strategies()
-    assert len(listed) == 4
+    assert len(listed) == len(REGISTRY)
     for entry in listed:
         assert set(entry) == {"name", "label", "description", "params", "defaults"}
         assert entry["description"], f"{entry['name']} has no description"
@@ -377,3 +395,80 @@ def test_list_strategies_is_api_ready():
 def test_base_strategy_refuses_to_generate():
     with pytest.raises(NotImplementedError):
         Strategy().generate_signals(load_asset("GOLD"))
+
+
+# ======================================================== volatility target
+
+
+def test_vol_target_sizes_down_when_volatility_rises():
+    """The whole premise in one assertion: same price level, more turbulence,
+    smaller position."""
+    calm = frame_from([100 + 0.2 * (-1) ** i for i in range(120)])
+    wild = frame_from([100 + 8.0 * (-1) ** i for i in range(120)])
+
+    strat = VolatilityTarget()
+    calm_size = strat.generate_signals(calm).iloc[-1]
+    wild_size = strat.generate_signals(wild).iloc[-1]
+    assert wild_size < calm_size
+
+
+def test_vol_target_stays_flat_until_it_has_a_volatility_estimate():
+    """No estimate means no defensible size, so it holds nothing rather than
+    guessing. The window needs vol_window returns, i.e. vol_window + 1 bars."""
+    df = frame_from(np.linspace(100, 140, 60))
+    sig = VolatilityTarget(params={"vol_window": 20}).generate_signals(df)
+    assert (sig.iloc[:20] == 0.0).all()
+    assert sig.iloc[20] != 0.0
+
+
+def test_vol_target_respects_its_cap_and_floor():
+    rng = np.random.default_rng(7)
+    df = frame_from(100 * np.exp(np.cumsum(rng.normal(0, 0.02, 400))))
+    sig = VolatilityTarget(params={"cap": 1.5, "floor": 0.4}).generate_signals(df)
+    live = sig[sig != 0.0]
+    assert live.max() <= 1.5
+    assert live.min() >= 0.4
+
+
+def test_vol_target_never_asks_to_go_short():
+    """It is a sizing rule, not a directional one. Exposure is never negative."""
+    rng = np.random.default_rng(3)
+    df = frame_from(100 * np.exp(np.cumsum(rng.normal(-0.001, 0.03, 400))))
+    assert (VolatilityTarget().generate_signals(df) >= 0).all()
+
+
+def test_vol_target_survives_a_flat_price_run():
+    """A run of identical closes gives zero volatility, which would divide to
+    infinity. Gold has 82 such bars in the snapshot, so this is reachable."""
+    df = frame_from([100.0] * 80)
+    sig = VolatilityTarget().generate_signals(df)
+    assert np.isfinite(sig.to_numpy()).all()
+    assert (sig == 0.0).all()
+
+
+def test_vol_target_uses_the_assets_calendar_when_it_is_known():
+    """A BTC year is 365 bars, so the same price path annualises to a higher
+    volatility and therefore a smaller position than it would for an equity."""
+    assert get_strategy("vol_target", asset="BTC").params["ann_factor"] == 365
+    assert get_strategy("vol_target", asset="NVDA").params["ann_factor"] == 252
+
+    rng = np.random.default_rng(11)
+    df = frame_from(100 * np.exp(np.cumsum(rng.normal(0, 0.015, 400))))
+    crypto = get_strategy("vol_target", asset="BTC").generate_signals(df)
+    equity = get_strategy("vol_target", asset="NVDA").generate_signals(df)
+    assert crypto.mean() < equity.mean()
+
+
+def test_an_explicit_calendar_parameter_beats_the_asset_default():
+    """The sweeps have to be able to vary it like any other parameter."""
+    strat = get_strategy("vol_target", {"ann_factor": 12}, asset="BTC")
+    assert strat.params["ann_factor"] == 12
+
+
+def test_vol_target_rejects_impossible_parameters():
+    with pytest.raises(ValueError, match="target_vol"):
+        VolatilityTarget(params={"target_vol": 0.0})
+    with pytest.raises(ValueError, match="cap must be at least floor"):
+        VolatilityTarget(params={"cap": 0.5, "floor": 1.0})
+    with pytest.raises(ValueError, match="vol_window"):
+        VolatilityTarget(params={"vol_window": 1})

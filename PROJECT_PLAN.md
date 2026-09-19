@@ -276,11 +276,129 @@ negative at 25 bps") was also GOLD's, not NVDA's. The script now switches asset
 to GOLD at that point, which is what the numbers support. Separately, the
 causality-test count was stated as eleven; it is fourteen.
 
+### Phase 8 — Continuous position sizing · 1.5 h · ✅ COMPLETE
+Delivered: the engine now treats a signal as a **target exposure** rather than a
+direction, a financing charge on borrowed cash, a no-trade band, and a fifth
+strategy (`vol_target`) that sizes inversely to recent volatility.
+
+The gap this closes: every technique that actually manages risk — volatility
+targeting, risk parity, drawdown control — is a *sizing* technique, and an
+engine that can only be all-in or all-out cannot express any of them. Four
+strategies answering "am I in or out?" is a timing platform, not a quantitative
+one.
+
+**Verification gate — passed.**
+1. ✅ All 318 pre-existing tests passed **unchanged** after the engine rewrite.
+   `{-1, 0, 1}` is a subset of the reals, so the discrete strategies take the
+   same code path they always did; this was the safety argument for the change
+   and it held.
+2. ✅ 37 new tests (355 total), including hand-computed leverage arithmetic, the
+   exact single-bar financing charge, band suppression, and a resized-position
+   P&L case that entry-price arithmetic cannot express.
+3. ✅ Endpoints re-checked against a **live server**, not just TestClient:
+   fractional positions in `curves`, `ann_factor` correctly 365 for BTC and 252
+   for NVDA, financing accrued, rebalances counted.
+4. ✅ Robustness sweep run on all three assets before any claim was written down.
+5. ✅ `./verify.sh` green — and it earned its keep. `strategy_report.py`'s
+   invariant checks caught **two real bugs in the new engine code that the test
+   suite missed**, which is the whole reason those checks run against live data
+   rather than toy frames.
+
+**The two bugs, both mine, both found by the report script.**
+
+*Slippage occasionally paid the trade instead of charging it.* Sizing divides by
+`(1 + commission)`, which can push the target below the units already held even
+when exposure is being increased — so a leg predicted to be a buy turned out to
+be a sell, while still using the buy-side fill. The engine now derives the fill
+and the size together and keeps whichever pair is self-consistent. The symptom
+was equity drifting from the trade log by 0.001% over a decade: invisible to any
+eyeball, caught by an exact identity.
+
+*The position series reported a stale label.* When a rebalance was skipped
+because the units held already matched the target, the bar kept the *previous*
+target as its label, misreporting what was held by up to 6% on 1.6% of bars.
+Cash and equity were always right; the reported exposure was not, and it feeds
+the dashboard's leverage statistics. Both bugs now have regression tests.
+
+**What the numbers actually say.** At the default 25% target, vol targeting is a
+*risk* tool, not a return tool:
+
+| Asset | | Return | Vol | Sharpe | Max DD |
+|---|---|--:|--:|--:|--:|
+| NVDA | buy & hold | 13,947% | 50.0% | 1.20 | −66.3% |
+| NVDA | vol target | 2,985% | 29.5% | **1.24** | **−36.6%** |
+| GOLD | buy & hold | 236% | 16.9% | **0.69** | **−24.9%** |
+| GOLD | vol target | 325% | 25.0% | 0.63 | −41.9% |
+| BTC | buy & hold | 13,312% | 66.8% | **1.04** | −83.4% |
+| BTC | vol target | 1,731% | 31.3% | 1.02 | **−48.8%** |
+
+Read the volatility column, not the return column: 50% / 17% / 67% becomes
+29% / 25% / 31%. The strategy's actual output is **risk equalisation across
+assets**, which is what it is for. It does not beat buy-and-hold on return at
+this setting on any asset, and the plan says so rather than choosing a target
+that flatters it.
+
+**The honest correction.** A vectorised prototype run before implementation
+suggested this configuration returned 15,109% on NVDA and beat buy-and-hold on
+every axis. It does not. The prototype was wrong; the audited engine is the
+number that counts, and the prototype's figure is recorded here only so nobody
+resurrects it from the conversation history.
+
 ---
 
 ## 6. Decision log
 
 Recorded so the reasoning survives the hackathon.
+
+**D36 — A signal is a target exposure, not a direction (Phase 8).**
+`generate_signals` returns any real number: `1.0` fully invested, `0.5` half,
+`1.5` half again borrowed, negative short. The engine sizes to it literally
+instead of taking its sign. The four directional strategies emit `{-1, 0, 1}`,
+which is a subset, so they take the identical code path — verified by all 318
+pre-existing tests passing unchanged after the rewrite. The alternative,
+bolting sizing on as a separate config field, is what `position_pct` already
+was: a single number fixed for the whole run, which no risk technique can use.
+
+**D37 — Leverage is charged for, per bar, at an adjustable rate (Phase 8).**
+Holding more than 100% exposure means a negative cash balance, and the engine
+accrues `financing_bps_annual` on it every bar, de-annualised by the asset's own
+calendar. This mirrors the short borrow fee already charged. The rate is a
+visible dashboard input, defaulting to 5%, because the honest answer to "does
+leverage help?" is "at what funding rate?" — institutions fund near 5% and
+retail margin is often 8–12%, which is frequently the difference between a
+levered strategy winning and losing. A levered backtest that ignored its own
+funding cost would be fiction.
+
+**D38 — The no-trade band is a strategy setting, so the benchmark ignores it
+(Phase 8).**
+A continuously-varying target would rebalance every single bar and pay
+commission for each one. The band suppresses a resize smaller than a given
+fraction of the position already held. Measured effect on NVDA: rebalances fall
+from 2,440 to 362 — a 7× reduction — while return *improves* slightly, and at
+100 bps per side the banded run returns 1,583% against the unbanded 1,139%.
+
+Entering, exiting and flipping are never suppressed however wide the band is.
+Trimming a position is an optimisation; getting out of one is a decision, and
+silently ignoring an exit signal to save commission would be a bug wearing the
+costume of a feature.
+
+`buy_and_hold` pins the band to zero for the same reason it pins `position_pct`
+to 1.0 (D28): a benchmark that moved when you changed a strategy setting is not
+a reference point.
+
+**D39 — `target_vol` is a risk dial, not a parameter to be fitted (Phase 8).**
+Sweeping it across a 4× range barely moves Sharpe — NVDA 1.23→1.29, BTC
+1.00→1.03 — while return and drawdown move enormously. That flatness is the
+signature of a real risk-scaling relationship rather than a fitted edge, and it
+is why the robustness sweep scores this strategy 0.94 / 0.83 / 0.92, the highest
+in the project.
+
+It also means the parameter cannot be "optimised" in any meaningful sense: you
+are choosing how much risk you want, not discovering a better setting. The
+default stays at a round 25% for all three assets *because* that is the point —
+it equalises risk across instruments whose natural volatilities are 50%, 17% and
+67%. Tuning it per asset to maximise return would invert the strategy's purpose
+and manufacture exactly the over-fitting the Research tab exists to detect.
 
 **D1 — Dropped `yfinance` and `pyarrow` (Phase 1).**
 PyPI was throttled to the point that neither package installed after ~12 minutes,
@@ -334,6 +452,32 @@ punishes the result arbitrarily. Open trades are marked to market, included in
 equity, and counted separately as `num_open_trades`, so `num_trades` means
 *completed round trips*. Buy-and-hold therefore reports 0 trades and 1 open
 position, which is literally what it does.
+
+**D35 — One platform-wide period, not per-chart zoom (post-Phase 7).**
+Per-chart zoom is the obvious generalisation of the Overview control and the
+wrong one. Half the charts are path-anchored — cumulative return, equity curves
+and drawdown are all indexed from the series start — so naive zoom shows a
+segment of a curve anchored outside the window: technically correct, and
+misleading, because the eye reads shape rather than absolute level. Making them
+meaningful requires *re-anchoring*, which is a recompute, not a zoom. And eight
+independently zoomed charts cannot be compared with one another at all.
+
+A single period in a bar under the tabs solves both: every view recomputes from
+the backend for the same window, so every figure on screen describes the same
+stretch of history. It also removed a duplicate control — the Backtest tab's own
+date range *was* this period, and two similar-looking controls meaning slightly
+different things is worse than one.
+
+Made the quant layer window-aware throughout to support it: `correlation_matrix`,
+`rolling_correlation`, `parameter_sweep`, `cost_sweep`, `period_sweep` and
+`regime_attribution` all take `start`/`end`, and every endpoint returns 422 on an
+empty window rather than an empty chart.
+
+One thing stays deliberately un-windowed: regime *labels* are computed on the
+full history and then sliced. Their thresholds are expanding — what counts as
+"high volatility" at a bar depends on everything before it — so recomputing from
+a window's own start would relabel bars according to a history that did not
+happen.
 
 **D34 — Zooming has a floor, and thin windows say so (post-Phase 7).**
 Testing the zoom at every scale found two failures below ~20 bars: the
@@ -567,7 +711,8 @@ production SLOs.
 
 - ✅ 10 years of validated history for 3 assets across 3 asset classes
 - ✅ All 7 required indicator/metric families computed and verified
-- ✅ 4 strategies backtested with costs, sizing and a like-for-like benchmark
+- ✅ 5 strategies backtested with costs, sizing and a like-for-like benchmark
+- ✅ Continuous position sizing, with leverage charged at an adjustable rate
 - ✅ Look-ahead bias structurally prevented **and** proven by a regression test
 - ✅ Regime attribution and robustness surfaces computed and visualised
 - ✅ Dashboard covering all 8 required visualisations

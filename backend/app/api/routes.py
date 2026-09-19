@@ -62,6 +62,13 @@ class ConfigIn(BaseModel):
     position_pct: float = Field(1.0, gt=0, le=1)
     allow_short: bool = False
     borrow_bps_annual: float = Field(50.0, ge=0, le=5000)
+    # Cost of borrowing cash, charged whenever exposure exceeds 100%. Retail
+    # margin is often 8-12%, so this is worth moving before believing a levered
+    # result.
+    financing_bps_annual: float = Field(500.0, ge=0, le=5000)
+    # Minimum change in target exposure, relative to the exposure held, before
+    # the engine trades. Only continuously-sized strategies ever hit it.
+    no_trade_band: float = Field(0.0, ge=0, le=1)
 
     def to_config(self) -> BacktestConfig:
         return BacktestConfig(**self.model_dump())
@@ -487,11 +494,22 @@ DEFAULT_GRIDS = {
     "ema_trend": {"span": [20, 35, 50, 75, 100], "band": [0.0, 0.005, 0.01, 0.02, 0.03]},
     "momentum": {"window": [30, 60, 90, 120, 180], "band": [0.0, 0.025, 0.05, 0.10, 0.15]},
     "mean_reversion": {"window": [10, 15, 20, 30, 40], "entry_z": [1.0, 1.5, 2.0, 2.5, 3.0]},
+    # target_vol is a risk *choice* rather than a parameter to fit, so the axis
+    # spans settings a user might genuinely want rather than clustering around
+    # one. Sweeping it shows whether Sharpe is flat across the range, which is
+    # what a real risk-scaling relationship looks like.
+    "vol_target": {"vol_window": [10, 20, 30, 40, 60], "target_vol": [0.15, 0.20, 0.25, 0.30, 0.40]},
 }
 
 
 def _default_grid(strategy: str) -> dict[str, list]:
-    return DEFAULT_GRIDS[strategy]
+    try:
+        return DEFAULT_GRIDS[strategy]
+    except KeyError:
+        raise HTTPException(
+            422,
+            f"No default sweep grid for '{strategy}'. Send an explicit two-axis grid.",
+        ) from None
 
 
 @router.get("/panel")

@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.serialise import clean, frame_to_records, series_to_pairs
+from app.backtest.strategies import REGISTRY
 from app.main import app
 
 client = TestClient(app)
@@ -106,7 +107,8 @@ def test_assets_lists_every_asset_with_its_annualisation():
 def test_strategies_catalogue_is_complete():
     body = strict_json(client.get("/api/strategies"))
     names = {s["name"] for s in body["strategies"]}
-    assert names == {"sma_crossover", "ema_trend", "momentum", "mean_reversion"}
+    assert names == set(REGISTRY)
+    assert {"sma_crossover", "ema_trend", "momentum", "mean_reversion", "vol_target"} <= names
     for s in body["strategies"]:
         assert s["description"] and s["defaults"]
 
@@ -253,7 +255,7 @@ def test_backtest_rejects_impossible_config():
 
 def test_compare_runs_every_strategy_against_one_benchmark():
     body = strict_json(client.post("/api/backtest/compare", json={"asset": "GOLD"}))
-    assert len(body["runs"]) == 4
+    assert len(body["runs"]) == len(REGISTRY)
     assert body["benchmark"]["strategy"] == "buy_and_hold"
     for run in body["runs"]:
         assert "stats" in run and "curves" in run
@@ -723,3 +725,101 @@ def test_windowed_metrics_are_strictly_valid_json():
     r = client.get("/api/metrics?asset=GOLD&start=2019-06-01&end=2019-09-30")
     assert r.status_code == 200
     strict_json(r)
+
+
+# ================================================================ global period
+
+
+WINDOW = "start=2022-01-01&end=2023-12-31"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/api/ohlcv?asset=NVDA&{WINDOW}",
+        f"/api/indicators?asset=NVDA&{WINDOW}",
+        f"/api/metrics?asset=NVDA&{WINDOW}",
+        f"/api/correlation?{WINDOW}",
+        f"/api/rolling-correlation?a=BTC&b=NVDA&{WINDOW}",
+        f"/api/regime?asset=NVDA&{WINDOW}",
+        f"/api/backtest/regime-attribution?asset=NVDA&strategy=momentum&{WINDOW}",
+    ],
+    ids=lambda p: p.split("?")[0],
+)
+def test_every_get_endpoint_accepts_the_shared_period(path):
+    """The dashboard sets one period for the whole platform; an endpoint that
+    silently ignored it would show full-history numbers under a window label."""
+    r = client.request("GET", path)
+    assert r.status_code == 200, r.text
+    strict_json(r)
+
+
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("/api/backtest", {"asset": "NVDA", "strategy": "momentum"}),
+        ("/api/backtest/compare", {"asset": "NVDA"}),
+        ("/api/backtest/robustness", {"asset": "NVDA", "strategy": "momentum"}),
+    ],
+    ids=["backtest", "compare", "robustness"],
+)
+def test_every_post_endpoint_accepts_the_shared_period(path, body):
+    r = client.post(path, json={**body, "start": "2022-01-01", "end": "2023-12-31"})
+    assert r.status_code == 200, r.text
+    assert strict_json(r)["period"] == {"start": "2022-01-01", "end": "2023-12-31"}
+
+
+def test_windowed_correlation_differs_from_the_full_sample():
+    """The point of scoping correlation: GOLD and NVIDIA look unrelated across
+    the decade and considerably less so through 2020."""
+    full = strict_json(client.get("/api/correlation"))
+    y2020 = strict_json(client.get("/api/correlation?start=2020-01-01&end=2020-12-31"))
+
+    def pair(body, a, b):
+        return next(c["value"] for c in body["matrix"] if c["a"] == a and c["b"] == b)
+
+    assert y2020["observations"] < full["observations"]
+    assert pair(y2020, "GOLD", "NVDA") > pair(full, "GOLD", "NVDA") + 0.1
+
+
+def test_windowed_correlation_matrix_stays_well_formed():
+    body = strict_json(client.get("/api/correlation?start=2021-01-01&end=2021-12-31"))
+    for c in body["matrix"]:
+        if c["a"] == c["b"]:
+            assert abs(c["value"] - 1.0) < 1e-9
+        assert -1.0 <= c["value"] <= 1.0
+
+
+def test_windowed_robustness_reruns_the_whole_sweep():
+    """Surface, cost decay and period stability must all be confined to the
+    window — not just the headline."""
+    body = strict_json(
+        client.post(
+            "/api/backtest/robustness",
+            json={"asset": "NVDA", "strategy": "momentum", "start": "2022-01-01", "end": "2023-12-31"},
+        )
+    )
+    assert body["sweep"] and body["surface"]
+    for row in body["periods"]:
+        assert row["start"] >= "2022-01-01" and row["end"] <= "2023-12-31"
+
+
+def test_windowed_regime_labels_stay_inside_the_window():
+    body = strict_json(client.get("/api/regime?asset=BTC&start=2021-06-01&end=2021-12-31"))
+    dates = [r["date"] for r in body["rows"]]
+    assert dates[0] >= "2021-06-01" and dates[-1] <= "2021-12-31"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/correlation?start=2099-01-01",
+        "/api/regime?asset=NVDA&start=2099-01-01",
+        "/api/metrics?asset=NVDA&start=2099-01-01",
+        "/api/rolling-correlation?a=BTC&b=NVDA&start=2099-01-01",
+    ],
+    ids=lambda p: p.split("?")[0],
+)
+def test_an_empty_window_is_rejected_everywhere(path):
+    """Consistently 422 rather than an empty chart or a stack trace."""
+    assert client.get(path).status_code == 422

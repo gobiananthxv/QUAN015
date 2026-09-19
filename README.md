@@ -32,7 +32,7 @@ every result for the four ways backtests normally lie.
 | [DEMO.md](DEMO.md) | A scripted three-minute walkthrough |
 | [PROJECT_PLAN.md](PROJECT_PLAN.md) | Phase plan and full decision log |
 
-**Status:** all seven phases complete · **300 tests passing** · all 19
+**Status:** all eight phases complete · **355 tests passing** · all 19
 problem-statement requirements delivered.
 
 ---
@@ -175,8 +175,8 @@ Log-scale price with SMA 50/200 and EMA 50 overlaid, volume, green bands marking
 the periods a crossover strategy held a position, and green/red triangles at its
 **actual buy and sell fills** — taken from the trade log, not re-derived.
 
-**The chart is the control.** Drag left-to-right directly across it to select a
-period, or use the All/5Y/3Y/1Y/6M/3M buttons. Three things then follow:
+**The chart sets the platform period.** Drag left-to-right directly across it,
+and every tab follows. Three things then happen here:
 
 1. **Every metric recomputes for that window** — return, CAGR, volatility,
    Sharpe, Sortino, Calmar, drawdown and its duration, best and worst day. These
@@ -226,23 +226,37 @@ pair swings from −0.47 to +0.62 over a decade.
 ### 4 · Backtest — *what would this strategy have done?*
 
 Pick a strategy, edit its parameters, set your capital, commission and slippage,
-**and choose the period** — presets for the last 1/3/5 years, the Covid era or
-the 2022 bear market, or any custom date range. Signals are regenerated inside
-the window, so a sub-period is a genuine out-of-sample run rather than a trimmed
-full-history one, and the benchmark is restricted to the same window. You get the equity curve against buy-and-hold, a full metric
+and run. The **period comes from the Period bar** rather than a control of its
+own — the brief's "backtesting periods" *is* the platform period, so there is
+one place to set it. Signals are regenerated inside the window, so a sub-period
+is a genuine out-of-sample run rather than a trimmed full-history one, and the
+benchmark is restricted to the same window. You get the equity curve against buy-and-hold, a full metric
 comparison, and a complete trade log — entry, exit, size, gross P&L, costs, net.
 
 Controls cover every item the brief lists under *Realistic Trading Simulation*:
 initial capital, **position sizing**, commission, slippage, and — when shorts are
 enabled — a borrow fee charged for every bar the short is held.
 
+Picking a strategy that sizes continuously (Volatility Target) reveals two more
+controls, because they only mean anything for that kind of strategy:
+
+- **financing bps/yr** — interest on borrowed cash, charged for every bar
+  exposure sits above 100%. Institutions fund near 5%; retail margin is often
+  8–12%. Raise it until the strategy stops winning: that number tells you what
+  rate the result actually depends on, which is the honest way to read any
+  levered backtest.
+- **no-trade band %** — the smallest change in target size worth trading, as a
+  share of the position already held. Without one, a continuously-varying target
+  rebalances every single bar and pays commission for the privilege. At 10% on
+  NVDA it removes 85% of the rebalances and slightly *improves* the return.
+
 Both the strategy and the benchmark pay the same costs. The benchmark is
-**always fully invested**, whatever position size the strategy uses: a yardstick
-that shrank with your settings would not be a reference point.
+**always fully invested**, whatever position size or band the strategy uses: a
+yardstick that shrank with your settings would not be a reference point.
 
-### 5 · Compare — *which strategy is best on this asset?*
+### 5 · Compare — *which strategy is best on this asset, in this period?*
 
-All four strategies and the benchmark on one chart, switchable between equity
+All five strategies and the benchmark on one chart, switchable between equity
 curve and drawdown, with a ranked table underneath. Every run shares the same
 capital, costs and window, so the comparison is like-for-like.
 
@@ -273,7 +287,7 @@ That is a deliberate trade, and the reasons are in priority order:
 | **Reproducibility** | A backtest must give the same answer today and next week. If the underlying prices moved between runs, every reported figure would drift and the tests asserting exact values would fail daily. |
 | **Availability** | The platform works with no internet connection at all. |
 | **Speed** | ~14 ms from disk against ~500 ms over the network — and the Research tab runs dozens of backtests per click. |
-| **Test integrity** | 300 tests run offline in 9 seconds instead of hammering a provider. |
+| **Test integrity** | 355 tests run offline in 9 seconds instead of hammering a provider. |
 
 It is a *snapshot*, not a cache: there is no TTL, nothing expires, and nothing
 refreshes on a timer. To move the baseline forward, either press **↻ Refresh
@@ -310,8 +324,8 @@ These three run independently off the cache and never touch each other.
 
 | # | Stage | Entry point | What happens |
 |:--|:--|:--|:--|
-| 5 | **Signals** | `strategy.generate_signals(df)` | Target position at each bar's **close**, in `{-1, 0, 1}` |
-| 6 | **Execute** | `engine.run_backtest(...)`<br>`engine.buy_and_hold(...)` | Lags signals one bar, fills at the next open ± slippage, charges commission both sides, sizes from equity, marks to market every close |
+| 5 | **Signals** | `strategy.generate_signals(df)` | Target *exposure* at each bar's **close**: `1.0` fully invested, `0.5` half, `1.5` half again borrowed, `0` flat, negative short |
+| 6 | **Execute** | `engine.run_backtest(...)`<br>`engine.buy_and_hold(...)` | Lags signals one bar, fills at the next open ± slippage, charges commission both sides, sizes to the target from current equity, charges borrow on shorts and interest on borrowed cash, marks to market every close |
 
 Stage 6 returns a `BacktestResult` carrying the equity curve, per-bar position
 and a full trade log.
@@ -330,12 +344,17 @@ and a full trade log.
 ### The one contract everything depends on
 
 ```
-position[t] == sign(signal[t-1]),  filled at open[t]
+position[t] == signal[t-1],  filled at open[t]
 ```
 
 A signal derived from bar *t*'s close cannot be acted on until bar *t+1* opens.
 Every backtest number shifts if this changes, so it is pinned by a dedicated
 test (`test_execution_lag_is_exactly_one_bar`) rather than left to convention.
+
+The signal is a **target exposure**, not a direction, so the engine sizes to it
+literally rather than taking its sign. The four directional strategies only ever
+emit `-1`, `0` or `1`, which is the special case; Volatility Target emits
+anything between `0` and its cap.
 
 ---
 
@@ -359,8 +378,8 @@ Aligned cross-asset panel: **2,511 common trading days.**
 | Asset | Total | CAGR | Volatility | Sharpe | Max DD | Longest DD |
 |:--|--:|--:|--:|--:|--:|--:|
 | GOLD | 236.9% | 12.95% | 16.95% | 0.69 | −24.9% | 836 d |
-| BTC | 13,236% | 63.07% | 66.81% | 1.04 | −83.4% | 1,079 d |
-| NVDA | 14,130% | 64.41% | 50.05% | 1.20 | −66.3% | 373 d |
+| BTC | 13,333% | 63.17% | 66.81% | 1.04 | −83.4% | 1,079 d |
+| NVDA | 14,130% | 64.37% | 50.04% | 1.20 | −66.3% | 373 d |
 
 ### Correlation is not a constant
 
@@ -371,38 +390,47 @@ when it is needed.
 
 ### Strategy vs benchmark
 
-All four strategies, 10 bps commission and 5 bps slippage per side, against
-buy-and-hold paying the same entry cost.
+All five strategies, 10 bps commission and 5 bps slippage per side, against
+buy-and-hold paying the same entry cost, with a 10% no-trade band.
+
+The **Actions** column counts round-trip trades for the four directional
+strategies. Volatility Target is marked `*` because it never closes a position —
+it only resizes one — so the comparable figure is its rebalance count. Zero
+trades and 552 rebalances is not a quiet row; it is a different kind of
+strategy.
 
 **GOLD**
 
 | Strategy | Total | Sharpe | Max DD | Trades | Exposure |
 |:--|--:|--:|--:|--:|--:|
 | SMA Crossover | 136.7% | 0.52 | −30.6% | 7 | 70% |
-| EMA Trend | 104.7% | 0.44 | −27.9% | 33 | 61% |
+| EMA Trend | 104.6% | 0.44 | −27.9% | 33 | 61% |
 | Momentum | 202.6% | 0.69 | **−21.0%** | 6 | 70% |
 | Mean Reversion | 18.2% | −0.00 | −10.6% | 38 | 20% |
-| **Buy & Hold** | **236.3%** | 0.69 | −24.9% | — | 100% |
+| Volatility Target | 325.0% | 0.63 | −41.9% | 209* | 99% |
+| **Buy & Hold** | 236.3% | **0.69** | −24.9% | — | 100% |
 
 **BTC**
 
 | Strategy | Total | Sharpe | Max DD | Trades | Exposure |
 |:--|--:|--:|--:|--:|--:|
-| SMA Crossover | 4,433% | 0.94 | −69.3% | 9 | 53% |
-| EMA Trend | 8,558% | 1.13 | **−61.2%** | 61 | 53% |
-| **Momentum** | **13,485%** | **1.16** | −64.3% | 18 | 57% |
+| SMA Crossover | 4,466% | 0.94 | −69.3% | 9 | 53% |
+| EMA Trend | 8,621% | 1.13 | −61.2% | 61 | 53% |
+| **Momentum** | **13,584%** | **1.16** | −64.3% | 18 | 57% |
 | Mean Reversion | −50.8% | −0.03 | −81.0% | 54 | 23% |
-| Buy & Hold | 13,216% | 1.04 | −83.4% | — | 100% |
+| Volatility Target | 1,731% | 1.02 | **−48.8%** | 552* | 99% |
+| Buy & Hold | 13,312% | 1.04 | −83.4% | — | 100% |
 
 **NVDA**
 
 | Strategy | Total | Sharpe | Max DD | Trades | Exposure |
 |:--|--:|--:|--:|--:|--:|
-| SMA Crossover | 6,409% | 1.18 | **−37.6%** | 3 | 74% |
+| SMA Crossover | 6,409% | 1.18 | −37.6% | 3 | 74% |
 | EMA Trend | 1,306% | 0.85 | −45.9% | 52 | 66% |
 | Momentum | 5,296% | 1.16 | −39.7% | 14 | 76% |
 | Mean Reversion | 248.4% | 0.53 | −55.4% | 42 | 18% |
-| **Buy & Hold** | **13,947%** | **1.20** | −66.3% | — | 100% |
+| Volatility Target | 2,985% | **1.24** | **−36.6%** | 362* | 99% |
+| **Buy & Hold** | **13,947%** | 1.20 | −66.3% | — | 100% |
 
 ### Reading those tables honestly
 
@@ -414,8 +442,18 @@ for a decade, sitting out of the market costs more than the crashes it avoids.
 up half the return but cuts the worst drawdown from −66% to −38%. That is a
 different objective, not a worse one.
 
-**One genuine winner: Momentum on BTC** — 13,485% against the benchmark's
-13,216%, with a higher Sharpe and a shallower drawdown, in 18 trades.
+**One genuine winner: Momentum on BTC** — 13,584% against the benchmark's
+13,312%, with a higher Sharpe and a shallower drawdown, in 18 trades.
+
+**Volatility Target is not trying to win the return column.** Read the
+volatility instead: buy-and-hold runs at 50% / 17% / 67% on NVDA, GOLD and BTC,
+and vol targeting brings all three to 25–31%. That is the output — three assets
+with utterly different temperaments held at one risk level. It costs return on
+NVDA and BTC, buys the best Sharpe on the board on NVDA (1.24 vs 1.20), and on
+gold it does the opposite of what the name suggests: gold is *quieter* than the
+25% target, so the strategy levers up to an average of 1.67× and takes a −41.9%
+drawdown for a worse Sharpe than simply owning the metal. A risk tool pointed at
+a low-risk asset becomes a risk *amplifier*, which is worth seeing once.
 
 **Mean reversion lost money on BTC** (−50.8%). Buying dips works until the dip
 keeps going. It loses at zero cost too (−42.1%), so this is the rule failing,
@@ -429,13 +467,21 @@ Near 1.0 means the surface is flat and the parameter choice barely matters; near
 
 | Strategy | GOLD | BTC | NVDA | Verdict |
 |:--|--:|--:|--:|:--|
-| SMA Crossover | 0.83 | 0.88 | 0.87 | robust — 100% of cells positive on all three |
+| SMA Crossover | 0.84 | 0.88 | 0.88 | robust — 100% of cells positive on all three |
 | EMA Trend | 0.58 | 0.91 | 0.85 | robust on BTC/NVDA, moderate on gold |
 | Momentum | 0.82 | 0.90 | 0.89 | robust across the board |
 | Mean Reversion | **0.10** | **0.24** | 0.63 | **fragile — treat as over-fitted** |
+| Volatility Target | 0.83 | **0.92** | **0.94** | the flattest surface in the project |
 
 **The tool flags our own weakest strategy.** Mean Reversion's headline numbers
 come from a handful of grid cells, consistent with it losing money on BTC.
+
+**Volatility Target scores highest, and the reason is structural rather than
+lucky.** Sweeping `target_vol` across a 4× range moves Sharpe by less than 0.06
+on NVDA while return and drawdown move enormously. A flat surface like that is
+what a real risk-scaling relationship looks like — and it also means the
+parameter cannot be optimised in any useful sense. You are choosing how much
+risk you want, not finding a better setting.
 
 **Period stability is the harshest test, and most strategies fail it.** Across
 five consecutive windows with signals regenerated in each, strategies beat
@@ -482,8 +528,8 @@ a disclaimer.
 | Risk | Defence |
 |:--|:--|
 | **Look-ahead bias** | Signals are shifted one bar and filled at the next open. Trading on a close you could not have observed is impossible by construction. Pinned by a dedicated test. |
-| **Data leakage** | Indicators use only rolling and ewm windows; regime thresholds use expanding quantiles. 14 causality tests confirm that appending future bars never changes a past value — 9 indicators, 4 strategies, and the regime labels. |
-| **Unrealistic execution** | Commission and slippage charged on notional on both sides, with slippage always moving price against the trade. The benchmark pays the same entry cost. |
+| **Data leakage** | Indicators use only rolling and ewm windows; regime thresholds use expanding quantiles. 15 causality tests confirm that appending future bars never changes a past value — 9 indicators, 5 strategies, and the regime labels. |
+| **Unrealistic execution** | Commission and slippage charged on notional on both sides, with slippage always moving price against the trade. Shorts pay a borrow fee per bar; leveraged positions pay interest on the borrowed cash. The benchmark pays the same entry cost. |
 | **Over-optimisation** | Parameter sweeps report the whole Sharpe surface plus median, worst, share-positive and a neighbour comparison — never just the maximum. The verdict labels our own Mean Reversion strategy *fragile*. |
 
 ### Four decisions that change whether the numbers are right
@@ -524,22 +570,22 @@ Stated plainly, because an unstated simplification is a claim.
 | **No stop-losses or intraday exits** | Neutral | Not in the brief; every strategy is close-to-close by construction. |
 
 What *is* modelled: commission and slippage on both sides, short borrow cost per
-bar, split and dividend adjustment, per-asset annualisation, and next-open
-execution.
+bar, interest on borrowed cash whenever exposure exceeds 100%, split and dividend
+adjustment, per-asset annualisation, and next-open execution.
 
 ### Reading the charts
 
 | Interaction | What it does |
 |:--|:--|
-| **Drag across the price chart** | Select any period; a highlight follows the pointer |
-| **All / 5Y / 3Y / 1Y / 6M / 3M** | Jump to a trailing window |
-| **✕ reset** | Back to the full history |
+| **Period bar presets / dates** | Set the window for every tab at once |
+| **Drag across the price chart** | Same thing, done visually; a highlight follows the pointer |
+| **✕ full history** | Back to the whole series |
 | Hover any chart | Crosshair tooltip with every series at that date |
 | Zoom in on Overview | All metrics, signal periods, markers, volume and the trade table follow |
 
 ### Testing
 
-**300 tests.** Values are hand-computed against known answers, not snapshotted
+**355 tests.** Values are hand-computed against known answers, not snapshotted
 from the implementation — a snapshot test locks in whatever bug exists.
 
 | Suite | Tests | Covers |
@@ -550,7 +596,7 @@ from the implementation — a snapshot test locks in whatever bug exists.
 | `test_engine.py` | 43 | Look-ahead, cost arithmetic to the cent, equity curve vs trade log agreement |
 | `test_strategies.py` | 51 | Known-answer price paths, parameter validation, strategy causality |
 | `test_robustness.py` | 35 | Plateau detection against constructed surfaces with known answers |
-| `test_api.py` | 81 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
+| `test_api.py` | 99 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
 
 ---
 
@@ -571,13 +617,13 @@ backend/
       regime.py            Bull/bear + volatility regime classification
     backtest/
       engine.py            Bar-by-bar execution, costs, trade log, benchmark
-      strategies.py        Four strategies behind a common base class
+      strategies.py        Five strategies behind a common base class
       robustness.py        Parameter/cost/period sweeps, regime attribution
     api/
       routes.py            REST endpoints
       serialise.py         inf/NaN -> null, numpy -> native
     main.py                FastAPI app, CORS, /health
-  tests/                   300 tests
+  tests/                   355 tests
   scripts/                 One runnable gate per phase
   data_snapshot/           Committed CSV market data
 frontend/
@@ -633,10 +679,20 @@ class RsiReversal(Strategy):
         return self._hold(r > self.params["oversold"], r < 20, df.index)
 ```
 
-Return the target position at each bar's **close** in `{-1, 0, 1}`. The engine
-applies the execution lag — a strategy must never lag its own signals, or it
-double-lags. The strategy dropdowns, comparison runs and robustness sweeps all
-update automatically.
+Return the target **exposure** at each bar's close: `1.0` fully invested, `0`
+flat, `-1.0` fully short, and anything in between or beyond if the strategy
+sizes continuously. The engine applies the execution lag — a strategy must never
+lag its own signals, or it double-lags. The strategy dropdowns, comparison runs
+and robustness sweeps all update automatically.
+
+Two things to register if the strategy sizes rather than times:
+
+1. Add a default sweep grid in `DEFAULT_GRIDS` (`app/api/routes.py`), or the
+   Research tab has no two axes to plot.
+2. If it needs the asset's trading calendar, name the parameter in
+   `CALENDAR_PARAMS` and the registry fills it per asset — 365 bars a year for
+   crypto, 252 for equities. A shared constant would understate BTC volatility
+   by about 20%.
 
 ---
 

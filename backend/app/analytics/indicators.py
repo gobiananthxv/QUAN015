@@ -80,6 +80,20 @@ def roc(s: pd.Series, window: int = 20) -> pd.Series:
     return s.pct_change(window)
 
 
+def realised_vol(s: pd.Series, window: int = 20, ann_factor: int = 252) -> pd.Series:
+    """Annualised standard deviation of daily returns over a trailing window.
+
+    ``ann_factor`` is per-asset for the same reason it is everywhere else in
+    this codebase: crypto compounds 365 times a year and equities 252, so a
+    shared constant would understate BTC volatility by about 20%.
+
+    Uses the sample standard deviation (``ddof=1``, pandas' default) and
+    requires a full window, so the series is NaN until enough history exists
+    rather than quietly reporting a one-observation volatility of zero.
+    """
+    return s.pct_change().rolling(window, min_periods=window).std() * np.sqrt(ann_factor)
+
+
 def compute_indicators(
     df: pd.DataFrame,
     sma_fast: int = 20,

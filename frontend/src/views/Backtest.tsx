@@ -22,6 +22,18 @@ import { describePeriod, usePeriod } from '../period'
 import { Figure, Insight, type Tone } from '../components/Insight'
 import { int, money, num, pct, tipMoney, STRATEGY_COLORS } from '../format'
 
+// Parameters that are fractions rather than bar counts, so a step of 1 would be
+// useless. Kept as data because the alternative is a growing chain of string
+// tests inside the render.
+const SMALL_STEP = new Set(['band', 'threshold'])
+const COARSE_STEP = new Set(['target_vol', 'cap', 'floor'])
+// Parameters that describe the asset's trading calendar, not the strategy's
+// behaviour. The backend fills them from the asset registry, so sending the
+// catalogue's generic default would override a correct value with a wrong one
+// on BTC. They are dropped rather than shown read-only: an input nobody should
+// touch is still an input somebody will.
+const CALENDAR_PARAMS = new Set(['ann_factor'])
+
 export function Backtest({
   asset,
   strategies,
@@ -36,6 +48,11 @@ export function Backtest({
   // controls that look alike and mean slightly different things would be worse
   // than one, so this tab reads the shared value rather than owning its own.
   const { period, bounds } = usePeriod()
+  // A strategy that exposes a `cap` is one that sizes continuously, which is
+  // the only kind that can lever up or rebalance often enough for a band to
+  // matter. Detecting it from the parameters keeps the panel generic instead of
+  // naming a specific strategy in the UI layer.
+  const sizes = 'cap' in params
   const [result, setResult] = useState<{ strategy: RunResult; benchmark: RunResult } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -63,7 +80,9 @@ export function Backtest({
   // Selecting a strategy (or asset) resets to that strategy's defaults and runs.
   useEffect(() => {
     if (!info) return
-    const defaults = { ...info.defaults }
+    const defaults = Object.fromEntries(
+      Object.entries(info.defaults).filter(([k]) => !CALENDAR_PARAMS.has(k)),
+    )
     setParams(defaults)
     runWith(defaults, config, period)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -71,6 +90,10 @@ export function Backtest({
 
   const strat = result?.strategy
   const bench = result?.benchmark
+  // Same test as `sizes`, but against the result rather than the form. They
+  // differ for the moment between picking a strategy and its run returning,
+  // and reading leverage stats off a run that has none would render blanks.
+  const ranSizing = !!strat && 'cap' in strat.params
 
   /**
    * The verdict, derived from the two result sets rather than written by hand.
@@ -121,7 +144,7 @@ export function Backtest({
               {k}
               <input
                 type="number"
-                step={k.includes('z') || k === 'band' || k === 'threshold' ? 0.005 : 1}
+                step={SMALL_STEP.has(k) || k.includes('z') ? 0.005 : COARSE_STEP.has(k) ? 0.05 : 1}
                 value={v}
                 onChange={(e) => setParams({ ...params, [k]: Number(e.target.value) })}
               />
@@ -195,6 +218,38 @@ export function Backtest({
               />
             </label>
           )}
+          {sizes && (
+            <>
+              <label title="Annual interest on borrowed cash, charged for every bar exposure sits above 100%. Institutions fund near 5%; retail margin is often 8-12%. Raise it until the strategy stops winning — that tells you what rate the result depends on.">
+                financing bps/yr
+                <input
+                  type="number"
+                  step={50}
+                  min={0}
+                  value={config.financing_bps_annual}
+                  onChange={(e) =>
+                    setConfig({ ...config, financing_bps_annual: Number(e.target.value) })
+                  }
+                />
+              </label>
+              <label title="Smallest change in target size worth trading, as a share of the position already held. A continuously-sized strategy would otherwise rebalance every single bar and pay commission for it.">
+                no-trade band %
+                <input
+                  type="number"
+                  step={5}
+                  min={0}
+                  max={100}
+                  value={Math.round(config.no_trade_band * 100)}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      no_trade_band: Math.min(Math.max(Number(e.target.value), 0), 100) / 100,
+                    })
+                  }
+                />
+              </label>
+            </>
+          )}
 
           <button className="btn primary" onClick={run} disabled={busy}>
             {busy ? 'Running…' : 'Run backtest'}
@@ -241,8 +296,20 @@ export function Backtest({
             {verdict.wonDrawdown ? (
               <>
                 It cut the worst drawdown from <Figure value={pct(verdict.bd)} /> to{' '}
-                <Figure value={pct(verdict.sd)} tone="good" />, holding a position
-                only {pct(strat.stats.exposure, 0)} of the time
+                <Figure value={pct(verdict.sd)} tone="good" />
+                {/* "only 99% of the time" reads as a contradiction. A strategy
+                    that reduces risk by sizing down is doing something
+                    different from one that reduces it by staying out, and the
+                    sentence has to say which. */}
+                {ranSizing ? (
+                  <>
+                    {' '}
+                    without ever leaving the market — it sized down instead,
+                    averaging {pct(strat.stats.avg_leverage, 0)} of equity
+                  </>
+                ) : (
+                  <>, holding a position only {pct(strat.stats.exposure, 0)} of the time</>
+                )}
                 {/* Only frame this as a trade-off when it actually was one. On a
                     falling market a trend filter can win on BOTH axes, and
                     calling that "lower return for lower risk" is simply wrong. */}
@@ -258,9 +325,21 @@ export function Backtest({
                 strategy is worse on both axes.
               </>
             )}{' '}
-            It paid {money(strat.stats.total_costs)} in commission and slippage
-            across {int(strat.stats.num_trades)} trades. Check the Research tab
-            before trusting any of these numbers.
+            {/* A continuously-sized strategy may never close a position, so
+                "across 0 trades" would be both true and useless. Count what it
+                actually did instead. */}
+            It paid {money(strat.stats.total_costs)} in friction across{' '}
+            {ranSizing
+              ? `${int(strat.stats.total_rebalances)} rebalances`
+              : `${int(strat.stats.num_trades)} trades`}
+            {ranSizing && Number(strat.stats.total_financing) > 0 && (
+              <>
+                , of which {money(strat.stats.total_financing)} was interest on
+                borrowed cash at {num(Number(strat.config.financing_bps_annual) / 100, 1)}% a
+                year
+              </>
+            )}
+            . Check the Research tab before trusting any of these numbers.
           </Insight>
 
           <Panel title="Strategy vs benchmark" subtitle="Both pay the same costs" wide>
@@ -274,11 +353,31 @@ export function Backtest({
                   <Stat label="Max drawdown" value={pct(strat.stats.max_drawdown)} raw={strat.stats.max_drawdown} higherIsBetter={false} />
                   <Stat label="Final equity" value={money(strat.stats.final_equity)} />
                   <Stat label="Trades" value={int(strat.stats.num_trades)} />
-                  <Stat label="Win rate" value={pct(strat.stats.win_rate)} />
-                  <Stat label="Profit factor" value={num(strat.stats.profit_factor)} hint="Gross wins / gross losses. Blank when there were no losing trades." />
+                  {/* Both are computed over *closed* trades. With none closed
+                      they are 0.0, and a 0% win rate reads as "it lost every
+                      trade" rather than "it has not finished one yet". */}
+                  <Stat
+                    label="Win rate"
+                    value={Number(strat.stats.num_trades) > 0 ? pct(strat.stats.win_rate) : '—'}
+                    hint={Number(strat.stats.num_trades) > 0 ? undefined : 'No closed trades yet — the position is still open'}
+                  />
+                  <Stat
+                    label="Profit factor"
+                    value={Number(strat.stats.num_trades) > 0 ? num(strat.stats.profit_factor) : '—'}
+                    hint="Gross wins / gross losses across closed trades. Blank when there were no losing trades, or none have closed."
+                  />
                   <Stat label="Exposure" value={pct(strat.stats.exposure)} hint="Share of days holding a position" />
                   <Stat label="Costs paid" value={money(strat.stats.total_costs)} hint="Commission + slippage + borrow" />
-                  <Stat label="Position size" value={pct(strat.config.position_pct as number, 0)} hint="Fraction of equity committed per entry" />
+                  {ranSizing ? (
+                    <>
+                      <Stat label="Avg size" value={pct(strat.stats.avg_leverage, 0)} hint="Average target exposure while invested. Above 100% is borrowed." />
+                      <Stat label="Peak size" value={pct(strat.stats.max_leverage, 0)} hint="Largest exposure it ever held. If this equals the cap, the cap is binding and the result depends on it." />
+                      <Stat label="Rebalances" value={int(strat.stats.total_rebalances)} hint="Times the position was resized without being closed" />
+                      <Stat label="Financing" value={money(strat.stats.total_financing)} hint="Interest paid on borrowed cash" />
+                    </>
+                  ) : (
+                    <Stat label="Position size" value={pct(strat.config.position_pct as number, 0)} hint="Fraction of equity committed per entry" />
+                  )}
                 </div>
               </div>
               <div>
@@ -320,7 +419,7 @@ export function Backtest({
             </ResponsiveContainer>
           </Panel>
 
-          <Panel title="Trade log" subtitle={`${strat.trades?.length ?? 0} trades`} wide>
+          <Panel title="Trade log" subtitle={`${strat.trades?.length ?? 0} ${strat.trades?.length === 1 ? 'trade' : 'trades'}`} wide>
             <div className="table-scroll">
               <table className="data">
                 <thead>

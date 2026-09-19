@@ -49,6 +49,17 @@ DEFAULT_POSITION_PCT = 1.0     # fraction of equity committed per entry
 # easy-to-borrow rate; hard-to-borrow names cost far more. Zero would let a
 # short be held indefinitely for free.
 DEFAULT_BORROW_BPS_ANNUAL = 50.0
+# Annual interest on a negative cash balance, i.e. the cost of holding more than
+# 100% exposure. Institutional funding sits near this level; retail margin is
+# often 8-12%, which is why the figure is a visible, adjustable input rather
+# than a constant buried in the engine — a levered result is only as good as
+# the rate you can actually borrow at.
+DEFAULT_FINANCING_BPS_ANNUAL = 500.0
+# Minimum change in target exposure, as a fraction of the exposure already held,
+# before the engine will trade. Zero reproduces classic all-in/all-out
+# behaviour; a continuously-sized strategy needs a band or it pays commission
+# every single bar.
+DEFAULT_NO_TRADE_BAND = 0.0
 
 RISK_FREE_RATE = 0.02  # annual, used by Sharpe/Sortino
 
