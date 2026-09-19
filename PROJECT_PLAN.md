@@ -41,10 +41,10 @@ Every requirement from the problem statement, mapped to where it is delivered.
 | 12 | Strategy engine: Mean Reversion | 4 | ✅ Done |
 | 13 | Realistic simulation: initial capital, position sizing, transaction costs, entry/exit prices, portfolio value, trade count | 3 | ✅ Done |
 | 14 | Strategy vs Buy-and-Hold benchmark | 3 | ✅ Done |
-| 15 | Robustness testing (parameter / cost / period sweeps) | 5 | ⬜ Pending |
+| 15 | Robustness testing (parameter / cost / period sweeps) | 5 | ✅ Done |
 | 16 | Market regime analysis (bull / bear / high-vol / low-vol) | 5 | ✅ Done |
 | 17 | Dashboard: prices, SMA/EMA, returns & volatility, drawdowns, correlation heatmap, buy/sell signals, equity curves, strategy vs benchmark | 6 | ⬜ Pending |
-| 18 | Bias minimisation: look-ahead, data leakage, unrealistic execution, over-optimisation | 3 + 7 | 🔨 3 of 4 done |
+| 18 | Bias minimisation: look-ahead, data leakage, unrealistic execution, over-optimisation | 3 + 5 | ✅ Done (4 of 4) |
 | 19 | "Not a guarantee of future returns" disclaimer | 7 | ⬜ Pending |
 
 **Explicitly out of scope** (listed as *Future Scope* in the problem statement,
@@ -213,7 +213,7 @@ noisy quantities and whipsawed: 50% of gold's EMA Trend trades lasted ≤2 bars,
 and costs consumed 67% of its gross return. Both now use a confirmation band
 (see **D13**).
 
-### Phase 5 — Regime attribution & robustness · 2 h · ⬜ PENDING
+### Phase 5 — Regime attribution & robustness · 2 h · ✅ COMPLETE
 - Slice each strategy's returns by regime → "when does this strategy actually work?"
 - Parameter grid sweep → Sharpe heatmap. A smooth plateau means robust; an
   isolated spike means overfit. This is the visual argument against over-optimisation.
@@ -302,6 +302,43 @@ equity, and counted separately as `num_open_trades`, so `num_trades` means
 *completed round trips*. Buy-and-hold therefore reports 0 trades and 1 open
 position, which is literally what it does.
 
+**D17 — Excess return is geometric, not arithmetic (Phase 5, post-audit fix).**
+`strategy_total − benchmark_total` is meaningless once returns compound large.
+NVDA's 2022-2024 window reads −639% that way, suggesting a catastrophic loss,
+when the strategy in fact *gained* 177% against a benchmark that gained 816%.
+`relative_return` = `(1+s)/(1+b) − 1` gives −69.8%: the strategy ended with 30%
+of the benchmark's wealth. It is bounded below by −100%, converges on the
+arithmetic figure for small returns, and always agrees with it on sign. Both are
+carried in the output; the reports display the geometric one.
+
+**D18 — An unprofitable surface is labelled unprofitable, not fragile (Phase 5, post-audit fix).**
+`robustness` = median/best inverts on an all-negative grid — the more uniformly
+bad the surface, the *higher* it scores. It previously clamped to 0.0 and
+returned "fragile: over-fitted", giving a uniformly-losing strategy and a
+single-lucky-cell strategy the same diagnosis. `robustness` is now `None` when
+the best cell is unprofitable, the verdict says so explicitly, and a sign-
+agnostic `spread` (best − worst) is reported alongside.
+
+**D19 — No NaN in any API-bound payload (Phase 5, post-audit fix).**
+`NaN` is not valid JSON, and `best_vs_neighbours` could previously be NaN when a
+grid corner had no neighbours. Undefined values are `None` so FastAPI emits
+`null`. A test asserts `json.dumps(report, allow_nan=False)` succeeds.
+
+**D15 — Robustness is reported as a surface plus a verdict, never as a maximum (Phase 5).**
+`plateau_report` deliberately returns median, worst, share-positive and a
+neighbour comparison alongside the best cell. Quoting only the best parameter
+set is how backtests mislead; the surface makes an isolated spike visible as a
+spike. The verdict thresholds (robustness ≥ 0.6 and ≥ 80% positive for "robust")
+are round and fixed in code, not tuned per strategy.
+
+**D16 — Period sweeps regenerate signals inside each window (Phase 5).**
+Slicing a full-history signal series into windows would leak: the indicator
+values at the start of window 3 were computed with knowledge of windows 1–2's
+prices, which is fine, but the *parameter choice* would still have been informed
+by the whole sample. Regenerating per window makes each a genuine out-of-sample
+run. This is a cheap stand-in for full walk-forward analysis, which stays out of
+scope.
+
 **D13 — Confirmation bands on EMA Trend and Momentum, chosen structurally (Phase 4).**
 Both rules originally flipped on a strict inequality against a noisy quantity.
 Diagnostics: 50% of gold's EMA Trend trades lasted ≤2 bars (Momentum 31-43%
@@ -315,8 +352,13 @@ band improves gold and NVDA but *reduces* EMA Trend's BTC return from 15,254% to
 8,558% — so choosing it on results would mean optimising after seeing the
 answers, exactly what the brief warns against. The justification is structural:
 trading noise 40% of the time is a defect identifiable without reference to any
-return figure. Phase 5's robustness sweep tests whether these defaults sit on a
-plateau or a spike.
+return figure.
+
+**Phase 5 audited this claim and it held.** Across six asset/strategy pairs the
+round defaults ranked best exactly once; they placed 3rd–5th of 5 candidate
+bands in the other five. A fitted parameter would rank first everywhere. The
+surfaces are also flat enough that the choice barely matters — EMA Trend scores
+robustness 0.85–0.91 on BTC and NVDA.
 
 **D14 — No test may sit on a numerical boundary (Phase 4).**
 `test_momentum_hand_computed_threshold_boundary` passed only because
@@ -372,7 +414,7 @@ production SLOs.
 - ✅ All 7 required indicator/metric families computed and verified
 - ✅ 4 strategies backtested with costs, sizing and a like-for-like benchmark
 - ✅ Look-ahead bias structurally prevented **and** proven by a regression test
-- ⬜ Regime attribution and a robustness surface, both visualised
+- 🔨 Regime attribution and robustness surfaces computed; visualisation pending (Phase 6)
 - ⬜ Dashboard covering all 8 required visualisations
 - ⬜ Core maths covered by tests that verify values, not just absence of crashes
 - ⬜ Runs end-to-end offline from the committed cache

@@ -34,11 +34,11 @@ against a buy-and-hold benchmark with realistic execution costs.
 | 2 | Analytics engine | ✅ Complete |
 | 3 | Backtesting engine | ✅ Complete |
 | 4 | Strategies | ✅ Complete |
-| 5 | Regime attribution + robustness | ⬜ Pending |
+| 5 | Regime attribution + robustness | ✅ Complete |
 | 6 | REST API + dashboard | ⬜ Pending |
 | 7 | Hardening + demo | ⬜ Pending |
 
-**174 tests passing.** Full phase breakdown and decision log in
+**209 tests passing.** Full phase breakdown and decision log in
 [`PROJECT_PLAN.md`](PROJECT_PLAN.md).
 
 ---
@@ -77,12 +77,20 @@ Stage 6 returns a `BacktestResult` carrying the equity curve, per-bar position,
 and a full trade log. The benchmark runs through the **same** engine with the
 **same** costs.
 
-### Stages 7–9 · Not yet built
+### Stage 7 · Robustness and attribution
+
+| Stage | Entry point | Answers |
+|:--|:--|:--|
+| **7a Parameter sweep** | `parameter_sweep(asset, strategy, grid)`<br>`plateau_report(sweep, params)` | Does this survive changing the parameters, or is it one lucky cell? |
+| **7b Cost sweep** | `cost_sweep(asset, strategy)` | Does the edge survive realistic friction? |
+| **7c Period sweep** | `period_sweep(asset, strategy, n_windows)` | Is this an edge, or one good episode? |
+| **7d Regime attribution** | `regime_attribution(asset, strategy)` | *Where* does it beat the benchmark — and at what exposure? |
+
+### Stages 8–9 · Not yet built
 
 | # | Stage | Planned entry point |
 |:--|:--|:--|
-| 7 | **Analyse** | `regime.regime_breakdown(key, returns)` — built, wiring pending<br>`robustness.sweep(...)` — parameter grid → Sharpe surface |
-| 8 | **Serve** | FastAPI: `/ohlcv` `/indicators` `/metrics` `/correlation` `/backtest` `/regime` |
+| 8 | **Serve** | FastAPI: `/ohlcv` `/indicators` `/metrics` `/correlation` `/backtest` `/regime` `/robustness` |
 | 9 | **Visualise** | React + Vite + TypeScript — Overview, Risk, Correlation, Backtest, Research |
 
 ### The one contract everything depends on
@@ -156,6 +164,10 @@ cd backend && .venv/bin/python scripts/backtest_report.py
 
 ```bash
 cd backend && .venv/bin/python scripts/strategy_report.py
+```
+
+```bash
+cd backend && .venv/bin/python scripts/robustness_report.py
 ```
 
 **Re-fetch live data** (overwrites the committed cache):
@@ -282,6 +294,57 @@ average would be exactly the over-optimisation the brief warns against, applied
 after seeing the answers. Phase 5's robustness sweep decides whether these
 defaults sit on a stable plateau or a lucky spike.
 
+### Robustness: does any of this survive scrutiny?
+
+Sharpe across a wide parameter grid, summarised as `robustness` = median ÷ best.
+Near 1.0 means the surface is flat and the parameter choice barely matters; near
+0 means one cell carries the whole result.
+
+| Strategy | GOLD | BTC | NVDA | Verdict |
+|:--|--:|--:|--:|:--|
+| SMA Crossover | 0.83 | 0.88 | 0.87 | robust — 100% of cells positive on all three |
+| EMA Trend | 0.58 | 0.91 | 0.85 | robust on BTC/NVDA, moderate on gold |
+| Momentum | 0.82 | 0.90 | 0.89 | robust across the board |
+| Mean Reversion | **0.10** | **0.24** | 0.63 | **fragile — treat as over-fitted** |
+
+The tool flags our own weakest strategy. Mean Reversion's headline numbers come
+from a handful of grid cells, which is consistent with it losing money on BTC.
+
+**Period stability is the harshest test, and most strategies fail it.** Split
+into 5 consecutive windows with signals regenerated per window, strategies beat
+buy-and-hold in only 1–2 windows out of 5. NVDA's SMA crossover ends the
+2022–2024 window with **30% of the wealth** buy-and-hold produced — being out of
+the market during the AI run was ruinous. One decade-long backtest hides that
+completely.
+
+Excess is reported **geometrically** — `(1+strategy)/(1+benchmark) − 1` — not as
+a difference of total returns. Subtracting two compounded returns is unreadable
+once they are large: that same window's arithmetic excess is −639%, which reads
+as losing six times your money when the strategy actually *gained* 177%. The
+geometric figure is bounded below by −100% and means what it says.
+
+**Cost sensitivity finds a real cliff.** Mean Reversion on gold turns negative
+by 25 bps per side, and EMA Trend on gold by 100 bps. Momentum on gold survives
+at 157% even at 100 bps. An edge that only exists at zero cost is not an edge.
+
+### Where strategies actually earn their keep
+
+Regime attribution puts the benchmark alongside the strategy for the same
+regime, with exposure. NVDA / Momentum:
+
+| Regime | Days | Exposure | Strategy | Benchmark | Beat? |
+|:--|--:|--:|--:|--:|:--|
+| bear | 476 | **18%** | −63.4% | −82.0% | ✅ |
+| bull | 1,839 | 94% | 13,448% | 35,789% | ❌ |
+| high vol | 923 | 55% | 328.7% | 322.3% | ✅ |
+| low vol | 767 | 97% | 381.8% | 353.2% | ✅ |
+| normal vol | 705 | 90% | 194.1% | 379.1% | ❌ |
+
+The **exposure** column is the real story: 18% invested in bear regimes against
+94% in bull. The strategy's value is not a higher return, it is being absent
+when the market falls — which is exactly what a trend filter is for, now
+measured rather than asserted.
+
 ---
 
 ## Design decisions
@@ -321,7 +384,7 @@ not a disclaimer.
 | **Look-ahead bias** | Signals are shifted one bar and filled at the next open. Trading on a close you could not have observed is impossible by construction. Pinned by a dedicated test. |
 | **Data leakage** | Indicators use only rolling and ewm windows; regime thresholds use expanding quantiles. 15 causality tests confirm that appending future bars never changes a past value. |
 | **Unrealistic execution** | Commission and slippage charged on notional on both sides, with slippage always moving price against the trade. The benchmark pays the same entry cost. |
-| **Over-optimisation** | Parameter sweeps report the whole Sharpe surface, so an isolated spike is visibly a spike. *(Phase 5)* |
+| **Over-optimisation** | Parameter sweeps report the whole Sharpe surface plus median, worst, share-positive and a neighbour comparison — never just the maximum. `plateau_report` returns an explicit verdict, and it labels our own Mean Reversion strategy *fragile*. |
 
 ---
 
@@ -343,7 +406,8 @@ backend/
     backtest/
       engine.py            Bar-by-bar execution, costs, trade log, benchmark
       strategies.py        Four strategies behind a common base class
-  tests/                   174 tests
+      robustness.py        Parameter/cost/period sweeps, regime attribution
+  tests/                   209 tests
   scripts/                 One runnable gate per phase
   data_cache/              Committed CSV market data
 docs/
