@@ -15,3 +15,5 @@ plotly>=5.15.0
 seaborn>=0.12.0
 scipy>=1.11.0
 joblib>=1.3.0
+google-genai   # news-sentiment analyzer (live Gemini calls)
+python-dotenv  # reads GEMINI_API_KEY from .env

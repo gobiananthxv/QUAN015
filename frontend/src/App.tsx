@@ -1,18 +1,35 @@
 import { useEffect, useState } from 'react'
 import { api, type Asset, type SnapshotEntry, type StrategyInfo } from './api'
+import { ChatPanel } from './chat/ChatPanel'
 import { ErrorState, Loading } from './components/Common'
 import { PeriodBar } from './components/PeriodBar'
+import { PageProvider } from './page/pageContext'
 import { PeriodProvider } from './period'
 import { Backtest } from './views/Backtest'
 import { Compare } from './views/Compare'
 import { Correlation } from './views/Correlation'
+import { NewsSentiment } from './views/NewsSentiment'
 import { Overview } from './views/Overview'
 import { Research } from './views/Research'
 import { Risk } from './views/Risk'
 import './App.css'
 
-const TABS = ['Overview', 'Risk', 'Correlation', 'Backtest', 'Compare', 'Research'] as const
+const TABS = ['Overview', 'Risk', 'Correlation', 'Backtest', 'Compare', 'Research', 'News Sentiment'] as const
 type Tab = (typeof TABS)[number]
+
+const PAGE_SUFFIX: Record<Tab, string> = {
+  Overview: 'Price & Trend',
+  Risk: 'Risk & Volatility',
+  Correlation: 'Cross-Asset Correlation',
+  Backtest: 'Backtest & Benchmark',
+  Compare: 'Strategy Comparison',
+  Research: 'Robustness Research',
+  'News Sentiment': 'News Sentiment Analysis',
+}
+
+// These tabs are inherently cross-asset: the asset picker does not apply, and
+// the chatbot's `selected_asset` marker becomes CROSS.
+const CROSS_ASSET_TABS: readonly Tab[] = ['Correlation', 'News Sentiment'] as const
 
 export default function App() {
   const [assets, setAssets] = useState<Asset[] | null>(null)
@@ -20,6 +37,7 @@ export default function App() {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([])
   const [asset, setAsset] = useState('NVDA')
   const [tab, setTab] = useState<Tab>('Overview')
+  const [chatOpen, setChatOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshNote, setRefreshNote] = useState<string | null>(null)
@@ -75,8 +93,20 @@ export default function App() {
   if (error) return <div className="app"><ErrorState error={error} onRetry={boot} /></div>
   if (!assets) return <div className="app"><Loading what="the platform" /></div>
 
-  // Correlation is inherently cross-asset, so the asset picker does not apply.
-  const showAssetPicker = tab !== 'Correlation'
+  // Correlation and News Sentiment are inherently cross-asset, so the asset
+  // picker does not apply to them. News analysis maps the article onto whatever
+  // platform assets it mentions, independent of the tab's selected asset.
+  const showAssetPicker = tab !== 'Correlation' && tab !== 'News Sentiment'
+
+  // Page identity handed to the chatbot: the visible asset (plus its display
+  // name) and the tab's section label. Correlation / News Sentiment are marked
+  // CROSS because the asset picker does not apply to them.
+  const assetMeta = assets.find((a) => a.key === asset)
+  const displayName = (assetMeta?.name ?? asset).replace(/ Future\(s\)/, '').trim()
+  const pageAsset = CROSS_ASSET_TABS.includes(tab) ? 'CROSS' : asset
+  const pageName = CROSS_ASSET_TABS.includes(tab)
+    ? PAGE_SUFFIX[tab]
+    : `${displayName} — ${PAGE_SUFFIX[tab]}`
 
   // Latest bar across the snapshot — how current the whole platform is.
   const asOf = snapshot
@@ -95,6 +125,7 @@ export default function App() {
   }
 
   return (
+    <PageProvider pageId={tab.replace(/ /g, '-').toLowerCase()} pageName={pageName} asset={pageAsset}>
     <PeriodProvider bounds={bounds}>
     <div className="app">
       <header className="masthead">
@@ -119,6 +150,13 @@ export default function App() {
               ))}
             </div>
           )}
+          <button
+            className="btn chatbot-toggle"
+            onClick={() => setChatOpen((o) => !o)}
+            title="Ask the assistant about the current page"
+          >
+            💬 Chatbot
+          </button>
         </div>
       </header>
 
@@ -167,6 +205,7 @@ export default function App() {
         {tab === 'Backtest' && <Backtest asset={asset} strategies={strategies} />}
         {tab === 'Compare' && <Compare asset={asset} strategies={strategies} />}
         {tab === 'Research' && <Research asset={asset} strategies={strategies} />}
+        {tab === 'News Sentiment' && <NewsSentiment />}
       </main>
 
       <footer>
@@ -175,5 +214,7 @@ export default function App() {
       </footer>
     </div>
     </PeriodProvider>
+    <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} />
+    </PageProvider>
   )
 }

@@ -23,6 +23,8 @@ import {
 import { ErrorState, Loading, Note, Panel, Stat } from '../components/Common'
 import { usePeriod } from '../period'
 import { Figure, Insight } from '../components/Insight'
+import type { ChartDescriptor } from '../page/pageContext'
+import { useRegisterCharts } from '../page/pageContext'
 import { int, money, num, pct, tipNum, tipVolume } from '../format'
 
 /**
@@ -196,6 +198,89 @@ export function Overview({ asset }: { asset: string }) {
     const t = setTimeout(() => loadWindow(from, to, bars), 250)
     return () => clearTimeout(t)
   }, [asset, from, to, view.start, view.end, loadWindow])
+
+  // Live state handed to the chatbot: what the page is actually showing. This
+  // is what lets "what is this chart saying?" resolve to the visible window.
+  useRegisterCharts(
+    useMemo<ChartDescriptor[]>(() => {
+      const out: ChartDescriptor[] = []
+      const trades = windowStats?.trades ?? []
+      const start = view.start
+      const end = view.end
+      let held = 0
+      for (let i = start; i <= end; i++) {
+        const d = data[i]?.date
+        if (!d) continue
+        if (trades.some((t) => d >= t.entry_date && (t.exit_date === null || d < t.exit_date))) held++
+      }
+      const exposure = end >= start ? held / (end - start + 1) : 0
+      const firstClose = Number(rows?.[0]?.close ?? 0)
+      const lastClose = Number(rows?.[rows.length - 1]?.close ?? 0)
+      const last = data[data.length - 1]
+      out.push({
+        id: 'price_and_trend',
+        title: `${asset} — Price & Trend`,
+        chart_type: 'price_line',
+        formula:
+          'Close price with SMA(50)/SMA(200)/EMA(50) overlays, SMA crossover buy/sell markers and in-market shading',
+        data_source: 'Backend /indicators on the committed price snapshot',
+        result: {
+          asset,
+          bars_available: data.length,
+          years_covered: rows && rows.length ? rows.length / 252 : null,
+          full_history_growth: firstClose > 0 ? lastClose / firstClose : null,
+          last_close: lastClose,
+          last_sma50: last?.sma50 ?? null,
+          last_sma200: last?.sma200 ?? null,
+          last_ema50: last?.ema50 ?? null,
+          window: { from, to, bars: end - start + 1 },
+          signal_sma: windowStats
+            ? { fast: windowStats.params.fast, slow: windowStats.params.slow }
+            : null,
+          exposure,
+          trades: trades.length,
+          open_trades: trades.filter((t) => t.is_open).length,
+        },
+      })
+      if (windowStats) {
+        out.push({
+          id: 'metrics_for_period',
+          title: 'Metrics for the selected period',
+          chart_type: 'summary',
+          formula:
+            'Annualised return/risk ratios (Sharpe, Sortino, Calmar, drawdown) across the visible window',
+          data_source: 'Backend /metrics over the selected window',
+          result: {
+            period: { from, to },
+            bars: windowStats.bars,
+            fast: windowStats.params.fast,
+            slow: windowStats.params.slow,
+            ...windowStats.summary,
+          },
+        })
+      }
+      const vols = data
+        .slice(start, end + 1)
+        .map((r) => r.volume)
+        .filter((v): v is number => v !== null)
+      if (vols.length) {
+        out.push({
+          id: 'volume_activity',
+          title: `${asset} — Volume`,
+          chart_type: 'bar',
+          formula: 'Trading volume per bar over the visible window',
+          data_source: 'Backend /indicators (raw volume)',
+          result: {
+            window_bars: vols.length,
+            avg_volume: vols.reduce((a, b) => a + b, 0) / vols.length,
+            peak_volume: Math.max(...vols),
+            last_volume: vols[vols.length - 1],
+          },
+        })
+      }
+      return out
+    }, [asset, data, rows, view, windowStats, from, to]),
+  )
 
   if (error) return <ErrorState error={error} onRetry={() => setRows(null)} />
   if (!rows || !data.length) return <Loading what="price history and indicators" />

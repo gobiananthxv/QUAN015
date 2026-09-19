@@ -21,7 +21,7 @@ every result for the four ways backtests normally lie.
 | | |
 |:--|:--|
 | [Quick start](#quick-start) | Get it running in one command |
-| [What you get](#what-you-get) | The five views and what each answers |
+| [What you get](#what-you-get) | The seven views and what each answers |
 | [How it works](#how-it-works) | The pipeline, stage by stage |
 | [The execution engine](#the-execution-engine-and-what-changed-in-it) | What the engine does, and how it changed in Phase 8 |
 | [Where the data comes from](#where-the-data-comes-from) | Why it reads a snapshot, not a live feed |
@@ -168,7 +168,7 @@ cd backend && .venv/bin/python scripts/bootstrap_data.py --refresh
 
 ## What you get
 
-Six views. Each answers one question.
+Seven views. Each answers one question.
 
 ### 1 · Overview — *what has this asset done?*
 
@@ -340,7 +340,7 @@ and a full trade log.
 | 7c | **Period sweep** | `period_sweep(...)` | Is this an edge, or one good episode? |
 | 7d | **Regime attribution** | `regime_attribution(...)` | *Where* does it beat the benchmark — and at what exposure? |
 | 8 | **Serve** | `uvicorn app.main:app` | 14 endpoints; `inf`/`NaN` leave as `null` |
-| 9 | **Visualise** | `npm run dev --prefix frontend` | React + Vite + TypeScript, five views |
+| 9 | **Visualise** | `npm run dev --prefix frontend` | React + Vite + TypeScript, seven views |
 
 ### The one contract everything depends on
 
@@ -771,7 +771,7 @@ frontend/
     api.ts                 Typed client; every numeric field is `number | null`
     format.ts              Display formatting; null renders as an em dash
     App.tsx                Shell, tabs, asset picker, disclaimer
-    views/                 Overview · Risk · Correlation · Backtest · Compare · Research
+    views/                 Overview · Risk · Correlation · Backtest · Compare · Research · News Sentiment
 run.sh · run.ps1           Start API + dashboard
 verify.sh                  Run every phase gate
 DEMO.md                    Scripted three-minute walkthrough
@@ -859,18 +859,27 @@ Interactive docs at `http://localhost:8000/docs`.
 | `POST` | `/api/backtest` | One strategy + benchmark + trade log; optional `start`/`end` |
 | `POST` | `/api/backtest/compare` | Every strategy against one benchmark; optional `start`/`end` |
 | `POST` | `/api/backtest/robustness` | Surface, plateau verdict, cost + period sweeps |
+| `GET` | `/api/news-sentiment/health` | Liveness + whether a live analysis is configured |
+| `POST` | `/api/news-sentiment/analyze-text` | Live Gemini analysis of a pasted news article |
+| `POST` | `/api/news-sentiment/analyze-image` | Live Gemini OCR + analysis of a news screenshot |
+| `POST` | `/api/news-sentiment/chart-data` | Recent price history for dependency charts, from the snapshot |
+| `GET` | `/api/news-sentiment/sentiment-history` | Articles analysed in this process (in-memory) |
 
 ### Dependencies
 
 Seven packages. No database, no cache server, no TA-Lib.
 
 ```
-fastapi · uvicorn · pandas · numpy · requests · pytest · httpx
+fastapi · uvicorn · pandas · numpy · requests · pytest · httpx · google-genai · python-dotenv
 ```
 
 Market data comes from the Yahoo Finance chart API via `requests`. See decision
 **D1** in [`PROJECT_PLAN.md`](PROJECT_PLAN.md#6-decision-log) for why `yfinance`
-and `pyarrow` were dropped.
+and `pyarrow` were dropped. The News Sentiment tab adds two optional-with-a-key
+dependencies: `google-genai` for the live Gemini analysis and `python-dotenv`
+to read `GEMINI_API_KEY` from a `backend/.env` file. Without a key the analyzing
+endpoints return 503 with an explanatory message; the rest of the platform is
+unaffected.
 
 Frontend: React 19, Vite, TypeScript, Recharts.
 

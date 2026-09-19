@@ -4,7 +4,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# The API server runs with the working directory `backend`, so `backend/.env`
+# is deliberately resolved from the module location rather than CWD. This is
+# what exposes the Featherless ``api_key`` the chatbot reads at request time.
+load_dotenv(BASE_DIR / ".env")
 # A committed snapshot of market data, not a cache: it has no TTL and never
 # expires on its own. Backtests must be reproducible, so the data a result was
 # computed from is pinned in the repository and only changes when someone

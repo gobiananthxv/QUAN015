@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Area,
   AreaChart,
@@ -15,6 +15,8 @@ import { api, type Summary } from '../api'
 import { describePeriod, usePeriod } from '../period'
 import { ErrorState, Loading, Note, Panel, Stat } from '../components/Common'
 import { Figure, Insight } from '../components/Insight'
+import type { ChartDescriptor } from '../page/pageContext'
+import { useRegisterCharts } from '../page/pageContext'
 import { int, num, pct, tipPct } from '../format'
 
 type Point = { date: string; value: number | null }
@@ -52,6 +54,40 @@ export function Risk({ asset }: { asset: string }) {
   }
 
   useEffect(load, [asset, period])
+
+  useRegisterCharts(
+    useMemo<ChartDescriptor[]>(() => {
+      if (!data) return []
+      return [
+        {
+          id: 'buy_hold_risk',
+          title: `${asset} — Buy & Hold Risk`,
+          chart_type: 'summary',
+          formula:
+            'Buy-and-hold metrics: total return, CAGR, volatility, Sharpe/Sortino/Calmar, max drawdown, drawdown duration, positive days',
+          data_source: 'Backend /metrics (risk-adjusted ratios)',
+          result: {
+            period: describePeriod(period, bounds),
+            ann_factor: data.annFactor,
+            return_window_days: data.returnWindow,
+            ...data.summary,
+          },
+        },
+        {
+          id: 'rolling_volatility',
+          title: `${asset} — Rolling 30-day volatility`,
+          chart_type: 'line',
+          formula: 'Annualised volatility over a rolling 30-day window',
+          data_source: 'Backend /metrics (rolling_vol)',
+          result: {
+            window_days: 30,
+            points: data.vol.length,
+            current_annualised_vol: data.vol[data.vol.length - 1]?.value ?? null,
+          },
+        },
+      ]
+    }, [asset, data, period, bounds]),
+  )
 
   if (error) return <ErrorState error={error} onRetry={load} />
   if (!data) return <Loading what="risk metrics" />

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -15,6 +15,8 @@ import { api, DEFAULT_CONFIG, type Num, type Plateau, type RegimeRow, type Strat
 import { ErrorState, Loading, Note, Panel } from '../components/Common'
 import { describePeriod, usePeriod } from '../period'
 import { Figure, Insight, type Tone } from '../components/Insight'
+import type { ChartDescriptor } from '../page/pageContext'
+import { useRegisterCharts } from '../page/pageContext'
 import { num, pct, tipPct } from '../format'
 
 type Robustness = Awaited<ReturnType<typeof api.robustness>>
@@ -55,6 +57,63 @@ export function Research({ asset, strategies }: { asset: string; strategies: Str
   }
 
   useEffect(load, [asset, name, period])
+
+  useRegisterCharts(
+    useMemo<ChartDescriptor[]>(() => {
+      if (!rob || !regime) return []
+      const p = rob.plateau
+      const label = strategies.find((s) => s.name === name)?.label ?? name
+      const beatCount = rob.periods.filter((w) => Number(w.relative_return) > 0).length
+      const firstNegativeCost = rob.costs.find((c) => Number(c.total_return) < 0)
+      const row = (r: RegimeRow) => ({
+        regime: r.regime,
+        days: r.days,
+        exposure: r.exposure,
+        strategy_return: r.strategy_return,
+        benchmark_return: r.benchmark_return,
+        relative_return: r.relative_return,
+        beat_benchmark: r.beat_benchmark,
+      })
+      return [
+        {
+          id: 'robustness_plateau',
+          title: `${label} — Robustness Research`,
+          chart_type: 'surface',
+          formula: `Sharpe across a ${rob.axes.x} x ${rob.axes.y} parameter grid; robustness = median Sharpe / best cell`,
+          data_source: 'Backend /robustness (dozens of backtests over the selected period)',
+          result: {
+            asset,
+            strategy: name,
+            period: describePeriod(period, bounds),
+            axes: rob.axes,
+            combinations: p.combinations,
+            verdict: p.verdict,
+            best: p.best,
+            median: p.median,
+            worst: p.worst,
+            spread: p.spread,
+            share_positive: p.share_positive,
+            robustness: p.robustness,
+            best_params: p.best_params,
+            beat_windows: `${beatCount} of ${rob.periods.length}`,
+            first_negative_cost_bps: firstNegativeCost ? Number(firstNegativeCost.bps_per_side) : null,
+          },
+        },
+        {
+          id: 'regime_attribution',
+          title: `${label} — Regime Attribution`,
+          chart_type: 'summary',
+          formula:
+            'Strategy vs benchmark, split by trend and volatility regimes (exposure, return, excess)',
+          data_source: 'Backend /regime-attribution',
+          result: {
+            trend: regime.filter((r) => r.axis === 'trend').map(row),
+            volatility: regime.filter((r) => r.axis === 'volatility').map(row),
+          },
+        },
+      ]
+    }, [strategies, asset, name, period, bounds, rob, regime]),
+  )
 
   const selector = (
     <div className="controls inline">

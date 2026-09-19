@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   CartesianGrid,
   Legend,
@@ -13,6 +13,8 @@ import { api, DEFAULT_CONFIG, type RunResult, type StrategyInfo } from '../api'
 import { ErrorState, Loading, Note, Panel } from '../components/Common'
 import { describePeriod, usePeriod } from '../period'
 import { Figure, Insight, type Tone } from '../components/Insight'
+import type { ChartDescriptor } from '../page/pageContext'
+import { useRegisterCharts } from '../page/pageContext'
 import { money, num, pct, STRATEGY_COLORS, tipMoney } from '../format'
 
 type Result = { asset: string; runs: RunResult[]; benchmark: RunResult }
@@ -37,6 +39,56 @@ export function Compare({ asset, strategies }: { asset: string; strategies: Stra
   }
 
   useEffect(load, [asset, period])
+
+  useRegisterCharts(
+    useMemo<ChartDescriptor[]>(() => {
+      if (!data) return []
+      const benchReturn = data.benchmark.stats.total_return ?? 0
+      const ranked = [...data.runs].sort(
+        (a, b) => (b.stats.total_return ?? 0) - (a.stats.total_return ?? 0),
+      )
+      const beaters = data.runs.filter((r) => (r.stats.total_return ?? 0) > benchReturn)
+      const shallower = data.runs.filter(
+        (r) => (r.stats.max_drawdown ?? 0) > (data.benchmark.stats.max_drawdown ?? 0),
+      )
+      return [
+        {
+          id: 'strategy_comparison',
+          title: `${asset} — Strategy Comparison vs Buy & Hold`,
+          chart_type: 'comparison',
+          formula:
+            'Every strategy and the benchmark run with identical capital and costs; ranked by total return',
+          data_source: 'Backend /compare over the selected period',
+          result: {
+            asset,
+            period: describePeriod(period, bounds),
+            displayed_metric: metric,
+            strategies: ranked.map((r) => ({
+              name: r.strategy,
+              total_return: r.stats.total_return,
+              cagr: r.stats.cagr,
+              sharpe: r.stats.sharpe,
+              max_drawdown: r.stats.max_drawdown,
+              num_trades: r.stats.num_trades,
+              win_rate: r.stats.win_rate,
+              exposure: r.stats.exposure,
+              total_costs: r.stats.total_costs,
+            })),
+            benchmark: {
+              total_return: benchReturn,
+              cagr: data.benchmark.stats.cagr,
+              sharpe: data.benchmark.stats.sharpe,
+              max_drawdown: data.benchmark.stats.max_drawdown,
+              exposure: data.benchmark.stats.exposure,
+            },
+            best_strategy: ranked[0]?.strategy ?? null,
+            beaters_count: beaters.length,
+            shallower_drawdown_count: shallower.length,
+          },
+        },
+      ]
+    }, [asset, data, period, bounds, metric]),
+  )
 
   if (error) return <ErrorState error={error} onRetry={load} />
   if (!data) return <Loading what="four strategies and the benchmark" />

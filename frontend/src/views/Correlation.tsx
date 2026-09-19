@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   CartesianGrid,
   Legend,
@@ -14,6 +14,8 @@ import { api, type Num } from '../api'
 import { describePeriod, usePeriod } from '../period'
 import { ErrorState, Loading, Note, Panel } from '../components/Common'
 import { Figure, Insight } from '../components/Insight'
+import type { ChartDescriptor } from '../page/pageContext'
+import { useRegisterCharts } from '../page/pageContext'
 import { num, tipNum3 } from '../format'
 
 const PAIR_COLORS = ['#4f9cf9', '#f59e0b', '#22c55e', '#a78bfa', '#ef4444', '#14b8a6']
@@ -38,6 +40,51 @@ export function Correlation() {
   }
 
   useEffect(load, [window, period])
+
+  useRegisterCharts(
+    useMemo<ChartDescriptor[]>(() => {
+      if (!data) return []
+      const points = Object.keys(data.rolling[0] ?? {}).filter((k) => k !== 'date')
+      let widest = { pair: '', min: 0, max: 0, swing: -1, staticCorr: 0 }
+      for (const pair of points) {
+        const values = data.rolling
+          .map((r) => r[pair])
+          .filter((v): v is number => typeof v === 'number')
+        if (!values.length) continue
+        const min = Math.min(...values)
+        const max = Math.max(...values)
+        if (max - min > widest.swing) {
+          const [a, b] = pair.split('~')
+          widest = {
+            pair: pair.replace('~', ' / '),
+            min,
+            max,
+            swing: max - min,
+            staticCorr: Number(data.matrix.find((c) => `${c.a}|${c.b}` === `${a}|${b}`)?.value ?? 0),
+          }
+        }
+      }
+      return [
+        {
+          id: 'correlation_matrix',
+          title: 'Cross-Asset Correlation Matrix',
+          chart_type: 'heatmap',
+          formula:
+            'Pearson correlation of aligned daily returns between every pair of platform assets, plus rolling correlation',
+          data_source: 'Backend /correlation over the selected period',
+          result: {
+            assets: data.assets,
+            observations: data.observations,
+            rolling_window_days: window,
+            pairs: points.map((p) => p.replace('~', ' / ')),
+            widest_pair: widest.pair,
+            widest_static_corr: widest.staticCorr,
+            widest_rolling_range: [widest.min, widest.max],
+          },
+        },
+      ]
+    }, [data, window]),
+  )
 
   if (error) return <ErrorState error={error} onRetry={load} />
   if (!data) return <Loading what="correlations" />

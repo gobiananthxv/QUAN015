@@ -190,6 +190,108 @@ export interface RegimeRow {
   beat_benchmark: boolean
 }
 
+// ------------------------------------------------ news sentiment
+
+export interface ArticleMetadata {
+  headline: string | null
+  publication_date: string | null
+  sentiment: string | null
+  color_psychology: string | null
+  urgency_level: string | null
+  summary: string | null
+}
+
+export interface NumericMention {
+  value: string | null
+  context: string | null
+  impact: string | null
+  asset: string | null
+}
+
+export interface ExtractedEntities {
+  assets: string[]
+  indicators: string[]
+  events: string[]
+  numeric_mentions: NumericMention[]
+}
+
+export interface ChartDataNeeded {
+  lookback_days: number
+  include_current: boolean
+  forecast_days: number
+}
+
+export interface DirectDependency {
+  asset: string
+  impact: string
+  correlation_strength: Num
+  expected_change: string | null
+  confidence: Num
+  chart_data_needed?: ChartDataNeeded
+}
+
+export interface IndirectDependency {
+  source: string | null
+  chain: string[]
+  affected_assets: string[]
+  expected_timeline_days: Num
+  confidence: Num
+  chart_data_needed?: ChartDataNeeded
+}
+
+export interface NumericPrediction {
+  mention: string | null
+  asset_impact: string | null
+  predicted_move: string | null
+  timeframe: string | null
+  probability: Num
+}
+
+export interface CorrelationAnalysis {
+  portfolio_correlation_shift: string | null
+  cross_asset_contagion_risk: Num
+  diversification_impact: string | null
+  summary: string | null
+}
+
+export interface NewsAnalysis {
+  article_metadata?: ArticleMetadata
+  extracted_entities?: ExtractedEntities
+  direct_dependencies?: { assets_affected: DirectDependency[] }
+  indirect_dependencies?: { relationships: IndirectDependency[] }
+  numeric_predictions?: { has_numeric_data: boolean; predictions: NumericPrediction[] }
+  correlation_analysis?: CorrelationAnalysis
+  _metadata?: { analyzed_at: string | null; gemini_model: string | null; api_status: string | null }
+}
+
+export interface NewsChartData {
+  asset: string
+  dates: string[]
+  prices: Num[]
+  sma_20: Num[]
+  ema_12: Num[]
+  forecast: Num[]
+}
+
+export interface NewsHealth {
+  status: string
+  api_key_configured: boolean
+  model: string
+}
+
+// ---------------------------------------------------------------- chatbot
+
+export interface ChatMsg {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface ChatPayload {
+  page_json: Record<string, unknown>
+  user_prompt: string
+  history: ChatMsg[]
+}
+
 class ApiError extends Error {
   // Declared and assigned explicitly: TypeScript's `erasableSyntaxOnly` mode
   // (the Vite default) disallows constructor parameter properties.
@@ -321,6 +423,40 @@ export const api = {
         (period.start ? `&start=${period.start}` : '') +
         (period.end ? `&end=${period.end}` : ''),
     ),
+
+  // ------------------------------------------------ news sentiment
+
+  /** Live Gemini analysis of a pasted article. 503 if GEMINI_API_KEY is unset. */
+  analyzeText: (text: string, provider: 'google' | 'feather' = 'google') =>
+    post<NewsAnalysis>('/api/news-sentiment/analyze-text', { text, provider }),
+
+  /** Live Gemini analysis of a news screenshot. */
+  analyzeImage: (file: File, provider: 'google' | 'feather' = 'google') => {
+    const form = new FormData()
+    form.append('image', file)
+    // Multipart: the browser must set its own boundary, so drop the JSON header.
+    return request<NewsAnalysis>(`/api/news-sentiment/analyze-image?provider=${provider}`, {
+      method: 'POST',
+      body: form,
+      headers: undefined,
+    })
+  },
+
+  /** Recent price history for a dependency chart, from the committed snapshot. */
+  newsChartData: (asset: string, lookbackDays = 5, forecastDays = 0) =>
+    post<NewsChartData>('/api/news-sentiment/chart-data', {
+      asset,
+      lookback_days: lookbackDays,
+      forecast_days: forecastDays,
+    }),
+
+  newsHealth: () => request<NewsHealth>('/api/news-sentiment/health'),
+
+  // ------------------------------------------------ chatbot
+
+  /** Live Qwen3-8B answer over the Featherless API. 503 if `api_key` is unset. */
+  chat: (payload: ChatPayload) =>
+    post<{ reply: string }>('/api/chat', payload),
 }
 
 export { ApiError }

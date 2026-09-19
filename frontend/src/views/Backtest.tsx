@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   CartesianGrid,
   Legend,
@@ -20,6 +20,8 @@ import {
 import { ErrorState, Loading, Note, Panel, Stat } from '../components/Common'
 import { describePeriod, usePeriod } from '../period'
 import { Figure, Insight, type Tone } from '../components/Insight'
+import type { ChartDescriptor } from '../page/pageContext'
+import { useRegisterCharts } from '../page/pageContext'
 import { int, money, num, pct, tipMoney, STRATEGY_COLORS } from '../format'
 
 // Parameters that are fractions rather than bar counts, so a step of 1 would be
@@ -123,6 +125,39 @@ export function Backtest({
           benchmark: bench.curves.equity[i],
         }))
       : []
+
+  useRegisterCharts(
+    useMemo<ChartDescriptor[]>(() => {
+      if (!strat || !bench || !verdict) return []
+      return [
+        {
+          id: 'backtest_strategy',
+          title: `${info?.label ?? name} — Backtest Result`,
+          chart_type: 'backtest',
+          formula:
+            'Strategy run through the platform engine (signals at next bar open, commission + slippage + borrow) vs an equally-costed buy-and-hold benchmark',
+          data_source: 'Backend /backtest over the selected period',
+          result: {
+            asset,
+            strategy: name,
+            strategy_label: info?.label ?? name,
+            period: describePeriod(period, bounds),
+            params: strat.params,
+            config: strat.config,
+            stats: { ...strat.stats },
+            benchmark_stats: { ...bench.stats },
+            final_equity: strat.curves.equity[strat.curves.equity.length - 1] ?? null,
+            benchmark_final_equity: bench.curves.equity[bench.curves.equity.length - 1] ?? null,
+            verdict: {
+              beats_on_return: verdict.wonReturn,
+              beats_on_drawdown: verdict.wonDrawdown,
+              relative_return_vs_buy_and_hold: verdict.relative,
+            },
+          },
+        },
+      ]
+    }, [asset, name, info, period, bounds, strat, bench, verdict]),
+  )
 
   return (
     <>
