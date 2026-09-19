@@ -39,12 +39,12 @@ Every requirement from the problem statement, mapped to where it is delivered.
 | 10 | Strategy engine: EMA Trend | 4 | ⬜ Pending |
 | 11 | Strategy engine: Momentum | 4 | ⬜ Pending |
 | 12 | Strategy engine: Mean Reversion | 4 | ⬜ Pending |
-| 13 | Realistic simulation: initial capital, position sizing, transaction costs, entry/exit prices, portfolio value, trade count | 3 | ⬜ Pending |
-| 14 | Strategy vs Buy-and-Hold benchmark | 3 | ⬜ Pending |
+| 13 | Realistic simulation: initial capital, position sizing, transaction costs, entry/exit prices, portfolio value, trade count | 3 | ✅ Done |
+| 14 | Strategy vs Buy-and-Hold benchmark | 3 | ✅ Done |
 | 15 | Robustness testing (parameter / cost / period sweeps) | 5 | ⬜ Pending |
 | 16 | Market regime analysis (bull / bear / high-vol / low-vol) | 5 | ✅ Done |
 | 17 | Dashboard: prices, SMA/EMA, returns & volatility, drawdowns, correlation heatmap, buy/sell signals, equity curves, strategy vs benchmark | 6 | ⬜ Pending |
-| 18 | Bias minimisation: look-ahead, data leakage, unrealistic execution, over-optimisation | 3 + 7 | ⬜ Pending |
+| 18 | Bias minimisation: look-ahead, data leakage, unrealistic execution, over-optimisation | 3 + 7 | 🔨 3 of 4 done |
 | 19 | "Not a guarantee of future returns" disclaimer | 7 | ⬜ Pending |
 
 **Explicitly out of scope** (listed as *Future Scope* in the problem statement,
@@ -141,7 +141,7 @@ Aligned panel: 2,511 common trading days.
 
 Run with `pytest tests/ -q` and `python scripts/analytics_report.py`.
 
-### Phase 3 — Backtesting engine · 3.5 h · ⬜ PENDING
+### Phase 3 — Backtesting engine · 3.5 h · ✅ COMPLETE
 The core of the project. Explicit bar-by-bar loop, not vectorised — slower, but
 it produces a real auditable trade log.
 
@@ -158,10 +158,30 @@ Also: benchmark runs through the *same* engine and pays the *same* entry cost,
 so the comparison is like-for-like.
 
 Outputs: equity curve, per-bar position, trade log (entry/exit date & price,
-size, gross P&L, costs, net P&L, return %, bars held), and a metric block
-including win rate, profit factor, exposure and total costs paid.
+size, gross P&L, commission, slippage, net P&L, return %, bars held), and a
+metric block including win rate, profit factor, exposure and total costs paid.
 
-### Phase 4 — Strategies · 1.5 h · ⬜ PENDING
+**Verification gate — passed.** 33 engine tests (123 total), all green:
+1. ✅ **Look-ahead** — `position[t] == sign(signal[t-1])` pinned by a dedicated
+   test; a signal on the final bar never trades; truncating the future leaves
+   past equity byte-identical.
+2. ✅ **Arithmetic hand-verified** — frictionless round trip, commission on both
+   sides, slippage direction, and `net = gross − commission − slippage` to the cent.
+3. ✅ **Two independent accounts agree** — final equity equals initial capital
+   plus the summed net P&L of every trade, on real data.
+4. ✅ **Costs behave** — returns fall monotonically as friction rises (0→100 bps);
+   frequent trading costs more than patient trading.
+5. ✅ **Benchmark is honest** — buy-and-hold pays an entry cost and underperforms
+   its frictionless self.
+6. ✅ Shorts ignored unless enabled; direction flips close and reopen correctly.
+
+Performance: **5–9 ms** over a decade of daily bars, well inside the 5 s target.
+
+An independent hand-check of gold's first trade: gross 82.4254 × (1267.20 −
+1211.40) = 4,599; costs 204.3 commission + 102.2 slippage = 306; net 4,293 —
+matching the engine exactly.
+
+### Phase 4 — Strategies · 1.5 h · ⬜ NEXT
 Thin `Strategy` base class — `generate_signals(df, params) -> Series[-1,0,1]`.
 Four implementations, ~25 lines each: SMA Crossover, EMA Trend (+ ROC
 confirmation), Momentum (ROC threshold), Mean Reversion (Bollinger z-score).
@@ -242,6 +262,25 @@ A genuinely constant return series has a standard deviation of ~1e-18, not 0.0.
 An `== 0` guard lets that through and divides by it. Guards now compare against
 `ZERO_TOL = 1e-12`.
 
+**D8 — Explicit bar loop instead of vectorised position × returns (Phase 3).**
+The vectorised form is a few lines and roughly 50× faster, but it yields no
+trade log — no entry price, no per-trade cost, no holding period — and the brief
+asks for exactly those. At 5–9 ms per decade-long run the speed is irrelevant,
+and the loop's arithmetic can be audited line by line against the equity curve.
+
+**D9 — A position still open at the final bar is reported, not force-closed.**
+Force-closing invents an exit the strategy never signalled and flatters or
+punishes the result arbitrarily. Open trades are marked to market, included in
+equity, and counted separately as `num_open_trades`, so `num_trades` means
+*completed round trips*. Buy-and-hold therefore reports 0 trades and 1 open
+position, which is literally what it does.
+
+**D10 — Gross P&L is measured at unslipped prices (Phase 3).**
+Slippage is a cost, so it belongs in the cost line, not buried in a worse entry
+price. Trades record both the fill price and the reference open, which makes
+`net = gross − commission − slippage` hold exactly and lets the dashboard show
+users what friction actually cost them.
+
 ---
 
 ## 7. Known data-quality notes
@@ -269,8 +308,8 @@ production SLOs.
 
 - ✅ 10 years of validated history for 3 assets across 3 asset classes
 - ✅ All 7 required indicator/metric families computed and verified
-- ⬜ 4 strategies backtested with costs, sizing and a like-for-like benchmark
-- ⬜ Look-ahead bias structurally prevented **and** proven by a regression test
+- 🔨 Engine ready with costs, sizing and a like-for-like benchmark; 4 strategies pending
+- ✅ Look-ahead bias structurally prevented **and** proven by a regression test
 - ⬜ Regime attribution and a robustness surface, both visualised
 - ⬜ Dashboard covering all 8 required visualisations
 - ⬜ Core maths covered by tests that verify values, not just absence of crashes

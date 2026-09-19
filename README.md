@@ -19,8 +19,8 @@ against a buy-and-hold benchmark with realistic execution costs.
 |---|---|---|
 | 0 | Scaffold | ✅ Complete |
 | 1 | Data pipeline | ✅ Complete |
-| 2 | Analytics engine | ✅ Complete (90 tests) |
-| 3 | Backtesting engine | ⬜ Pending |
+| 2 | Analytics engine | ✅ Complete |
+| 3 | Backtesting engine | ✅ Complete (123 tests) |
 | 4 | Strategies | ⬜ Pending |
 | 5 | Regime + robustness | ⬜ Pending |
 | 6 | API + dashboard | ⬜ Pending |
@@ -56,6 +56,118 @@ of this with:
 ```bash
 cd backend && ./.venv/Scripts/python.exe scripts/analytics_report.py
 ```
+
+### Strategy vs benchmark
+
+A 50/200 SMA crossover, charged 10 bps commission and 5 bps slippage per side,
+against buy-and-hold paying the same entry cost:
+
+| Asset | Run | Total | Sharpe | Max DD | Trades | Costs |
+|---|---|---|---|---|---|---|
+| GOLD | SMA 50/200 | 136.7% | 0.52 | −30.6% | 7 | $2,839 |
+| GOLD | Buy & hold | 236.3% | 0.69 | −24.9% | — | $150 |
+| BTC | SMA 50/200 | 4,433% | 0.94 | −69.3% | 9 | $72,423 |
+| BTC | Buy & hold | 13,216% | 1.04 | −83.4% | — | $150 |
+| NVDA | SMA 50/200 | 6,409% | 1.18 | −37.6% | 3 | $16,743 |
+| NVDA | Buy & hold | 13,947% | 1.20 | −66.3% | — | $150 |
+
+**The crossover loses to buy-and-hold on every asset.** That is the honest
+result and we report it as-is: on assets that trended this hard for a decade,
+sitting out of the market costs more than the crashes it avoids. What the
+strategy does buy is a materially shallower drawdown — NVDA −37.6% against
+−66.3%, BTC −69.3% against −83.4% — which is a different objective, not a
+worse one. Gold is the exception: there the crossover is worse on *both* axes.
+
+A platform that only surfaced strategies beating their benchmark would be
+selection bias with a dashboard.
+
+---
+
+## How it works
+
+The platform is a pipeline. Each stage consumes the stage above it and nothing
+else, so any stage can be run, tested or replaced on its own. Stages marked
+*pending* are not yet built; everything above them already runs end to end.
+
+```
+  ┌─ 1. INGEST ────────────────────────────────────────────── Phase 1 ✅
+  │  sources.fetch_ohlcv(key)
+  │  Yahoo chart API -> retry/backoff -> split & dividend adjustment
+  │  applied across all four OHLC fields
+  ▼
+  ┌─ 2. VALIDATE ──────────────────────────────────────────── Phase 1 ✅
+  │  validate.validate_ohlcv(df, key) -> (clean_df, quality_report)
+  │  OHLC invariants repaired · null & non-positive closes dropped
+  │  duplicates removed · index sorted · gaps counted
+  ▼
+  ┌─ 3. CACHE ─────────────────────────────────────────────── Phase 1 ✅
+  │  store.load_asset(key)      -> one asset, committed CSV
+  │  store.load_panel(keys)     -> many assets on a COMMON calendar
+  │  Cold cache fetches; warm cache reads from disk. Runs offline.
+  ▼
+  ├─────────────────────────┬──────────────────────────────────────────┐
+  ▼                         ▼                                          ▼
+┌─ 4a. INDICATORS ──┐  ┌─ 4b. METRICS ────────┐  ┌─ 4c. CORRELATION ──────┐
+│   Phase 2 ✅       │  │   Phase 2 ✅          │  │   Phase 2 ✅            │
+│ compute_indicators │  │ summarise(returns,   │  │ correlation_matrix()   │
+│ SMA EMA RSI MACD   │  │   ann_factor)        │  │ rolling_correlation()  │
+│ Bollinger ATR ROC  │  │ Sharpe Sortino       │  │ covariance_matrix()    │
+│ all causal         │  │ Calmar drawdown      │  │ returns, not prices    │
+└─────────┬──────────┘  └──────────┬───────────┘  └────────────────────────┘
+          │                        │
+          ▼                        │
+  ┌─ 5. SIGNALS ───────────────────┼───────────────────────── Phase 4 ⬜
+  │  strategy.generate_signals(df, params) -> Series in {-1, 0, 1}
+  │  SMA Crossover · EMA Trend · Momentum · Mean Reversion
+  │  The target position at each bar's CLOSE.
+  ▼                                │
+  ┌─ 6. EXECUTE ───────────────────┼───────────────────────── Phase 3 ✅
+  │  engine.run_backtest(df, signals, asset, config)
+  │                                │
+  │   signals.shift(1)  ◄── the bias guard: decide on t, act on t+1
+  │   fill at open[t+1] ± slippage
+  │   charge commission on notional, both sides
+  │   size from equity × position_pct
+  │   mark to market at every close
+  │                                │
+  │  -> BacktestResult: equity · returns · position · trade log
+  │  engine.buy_and_hold(df, asset, config)  <- same engine, same costs
+  ▼                                │
+  ┌─ 7. ANALYSE ───────────────────┴───────────────────────── Phase 5 ⬜
+  │  regime.regime_breakdown(key, returns)   <- Phase 2 ✅, wiring pending
+  │      "when does this strategy actually work?"
+  │  robustness.sweep(...)                   <- parameter grid -> Sharpe surface
+  ▼
+  ┌─ 8. SERVE ─────────────────────────────────────────────── Phase 6 ⬜
+  │  FastAPI: /ohlcv /indicators /metrics /correlation
+  │           /backtest /backtest/compare /backtest/robustness /regime
+  ▼
+  ┌─ 9. VISUALISE ─────────────────────────────────────────── Phase 6 ⬜
+     React + Vite + TypeScript
+     Overview · Risk · Correlation · Backtest · Research
+```
+
+### Running each stage
+
+Every completed stage has a script that exercises it on real data and exits
+non-zero if an invariant breaks — these are the phase gates, not just demos.
+
+```bash
+cd backend
+./.venv/Scripts/python.exe scripts/bootstrap_data.py     # stages 1-3
+./.venv/Scripts/python.exe scripts/analytics_report.py   # stages 4a-4c
+./.venv/Scripts/python.exe scripts/backtest_report.py    # stages 6 + benchmark
+./.venv/Scripts/python.exe -m pytest tests/ -q           # all 123 tests
+```
+
+### The one contract everything depends on
+
+`position[t] == sign(signal[t-1])`, filled at `open[t]`.
+
+A signal derived from bar *t*'s close cannot be acted on until bar *t+1* opens.
+Every backtest number in the platform shifts if this changes, so it is pinned by
+a dedicated test (`test_execution_lag_is_exactly_one_bar`) rather than left to
+convention.
 
 ---
 
@@ -112,11 +224,14 @@ backend/
       metrics.py         Returns, volatility, Sharpe, Sortino, Calmar, drawdown
       correlation.py     Correlation matrix, covariance, rolling correlation
       regime.py          Bull/bear + volatility regime classification
+    backtest/
+      engine.py          Bar-by-bar execution, costs, trade log, benchmark
   data_cache/            Committed CSV market data
-  tests/                 90 tests: hand-computed values + causality proofs
+  tests/                 123 tests: hand-computed values, causality + lag proofs
   scripts/
     bootstrap_data.py    Fetch, validate, cache, self-check
     analytics_report.py  Real-data sweep with plausibility checks
+    backtest_report.py   Engine run with invariant checks + cost sweep
 docs/
   problem-statement.pdf
   PROJECT_PLAN_FIN_original.md
