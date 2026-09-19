@@ -32,7 +32,7 @@ every result for the four ways backtests normally lie.
 | [DEMO.md](DEMO.md) | A scripted three-minute walkthrough |
 | [PROJECT_PLAN.md](PROJECT_PLAN.md) | Phase plan and full decision log |
 
-**Status:** all seven phases complete · **294 tests passing** · all 19
+**Status:** all seven phases complete · **300 tests passing** · all 19
 problem-statement requirements delivered.
 
 ---
@@ -175,12 +175,32 @@ Log-scale price with SMA 50/200 and EMA 50 overlaid, volume, green bands marking
 the periods a crossover strategy held a position, and green/red triangles at its
 **actual buy and sell fills** — taken from the trade log, not re-derived.
 
-**The chart zooms.** Drag the handles beneath it or use the All/5Y/3Y/1Y/6M/3M
-buttons. Across a full decade the fill markers are unreadable; zoomed to a year
-they are obvious. Everything follows the visible window — the bar above the
-chart recomputes the period return, the fill counts and the time invested, the
-volume panel tracks the same range, and a **Fills in view** table appears
-listing only the trades that opened or closed inside it.
+**The chart is the control.** Drag left-to-right directly across it to select a
+period, or use the All/5Y/3Y/1Y/6M/3M buttons. Three things then follow:
+
+1. **Every metric recomputes for that window** — return, CAGR, volatility,
+   Sharpe, Sortino, Calmar, drawdown and its duration, best and worst day. These
+   come from the **backend**, not the browser: the quant layer stays the single
+   source of truth, so the panel cannot drift from the Risk or Backtest tabs.
+2. **Signal periods scale to the window.** A 50/200 crossover yields four fills
+   in a decade and none at all in a quarter. Periods track the window
+   (50/200 → 20/100 → 10/50 → 5/20 → 3/10 → 2/6), so there are always markers to
+   inspect — verified non-empty at every window size from 2,300 bars down to the
+   floor, on all three assets. The toolbar states which pair is in use. This is a
+   display choice for the chart; parameters are chosen and judged on the Backtest
+   and Research tabs.
+3. **Markers and shading come from that window's own backtest** — real fills for
+   the parameters shown, with a trade table beneath.
+
+Zoom into 2022 on NVIDIA and the panel reads −51.4% return, Sharpe −0.87,
+−61.6% drawdown. Zoom to the last six months and it reads +29.0%, Sharpe 1.43.
+Same tool, same code, entirely different story.
+
+**Zooming has a floor.** Selections narrower than 20 bars are ignored, and
+windows under 60 bars carry an explicit caution. Below about a trading month the
+signal warm-up leaves no markers and annualising a handful of daily returns
+produces figures that look spectacular and mean nothing — a five-bar window
+reports a Sharpe of 23. Refusing the zoom is more honest than rendering that.
 
 Log scale matters: on a linear axis, a decade of NVIDIA compresses its first
 eight years into a flat line against the last two.
@@ -253,7 +273,7 @@ That is a deliberate trade, and the reasons are in priority order:
 | **Reproducibility** | A backtest must give the same answer today and next week. If the underlying prices moved between runs, every reported figure would drift and the tests asserting exact values would fail daily. |
 | **Availability** | The platform works with no internet connection at all. |
 | **Speed** | ~14 ms from disk against ~500 ms over the network — and the Research tab runs dozens of backtests per click. |
-| **Test integrity** | 294 tests run offline in 9 seconds instead of hammering a provider. |
+| **Test integrity** | 300 tests run offline in 9 seconds instead of hammering a provider. |
 
 It is a *snapshot*, not a cache: there is no TTL, nothing expires, and nothing
 refreshes on a timer. To move the baseline forward, either press **↻ Refresh
@@ -511,14 +531,15 @@ execution.
 
 | Interaction | What it does |
 |:--|:--|
-| Drag the brush handles | Zoom the price chart to any window |
+| **Drag across the price chart** | Select any period; a highlight follows the pointer |
 | **All / 5Y / 3Y / 1Y / 6M / 3M** | Jump to a trailing window |
+| **✕ reset** | Back to the full history |
 | Hover any chart | Crosshair tooltip with every series at that date |
-| Zoom in on Overview | Window stats, volume and the fills table all follow |
+| Zoom in on Overview | All metrics, signal periods, markers, volume and the trade table follow |
 
 ### Testing
 
-**294 tests.** Values are hand-computed against known answers, not snapshotted
+**300 tests.** Values are hand-computed against known answers, not snapshotted
 from the implementation — a snapshot test locks in whatever bug exists.
 
 | Suite | Tests | Covers |
@@ -529,7 +550,7 @@ from the implementation — a snapshot test locks in whatever bug exists.
 | `test_engine.py` | 43 | Look-ahead, cost arithmetic to the cent, equity curve vs trade log agreement |
 | `test_strategies.py` | 51 | Known-answer price paths, parameter validation, strategy causality |
 | `test_robustness.py` | 35 | Plateau detection against constructed surfaces with known answers |
-| `test_api.py` | 75 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
+| `test_api.py` | 81 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
 
 ---
 
@@ -556,7 +577,7 @@ backend/
       routes.py            REST endpoints
       serialise.py         inf/NaN -> null, numpy -> native
     main.py                FastAPI app, CORS, /health
-  tests/                   294 tests
+  tests/                   300 tests
   scripts/                 One runnable gate per phase
   data_snapshot/           Committed CSV market data
 frontend/
@@ -632,7 +653,7 @@ Interactive docs at `http://localhost:8000/docs`.
 | `GET` | `/api/strategies` | Strategy catalogue with defaults |
 | `GET` | `/api/ohlcv?asset=` | Validated bars + quality report |
 | `GET` | `/api/indicators?asset=` | All indicators, configurable periods |
-| `GET` | `/api/metrics?asset=` | Risk summary, rolling returns/volatility, drawdown |
+| `GET` | `/api/metrics?asset=` | Risk summary, rolling returns/volatility, drawdown; optional `start`/`end` |
 | `GET` | `/api/correlation?window=` | Matrix + rolling correlation |
 | `GET` | `/api/rolling-correlation?a=&b=` | One pair's rolling correlation |
 | `GET` | `/api/regime?asset=` | Regime labels over time |

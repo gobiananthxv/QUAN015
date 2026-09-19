@@ -227,11 +227,28 @@ def get_metrics(
     asset: str,
     vol_window: int = Query(30, ge=5, le=365),
     return_window: int = Query(252, ge=5, le=1260),
+    start: str | None = None,
+    end: str | None = None,
 ) -> dict:
-    """Buy-and-hold risk/return for one asset, with the series the Risk view plots."""
+    """Buy-and-hold risk/return for one asset, with the series the Risk view plots.
+
+    ``start``/``end`` restrict every figure to that window. The dashboard uses
+    this when you zoom the price chart, so the Sharpe, drawdown and volatility
+    on screen describe the period you are actually looking at.
+
+    The window is applied to *prices* before returns are taken, so the first
+    bar of the window has no return — which is correct. Slicing the return
+    series instead would carry in one return computed against a close from
+    outside the window.
+    """
     key = _asset_or_404(asset)
     asset_meta = get_asset(key)
     close = load_asset(key)["close"]
+    if start or end:
+        try:
+            close = window(close.to_frame("close"), start, end)["close"]
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
     returns = daily_returns(close)
     return clean(
         {
@@ -251,6 +268,11 @@ def get_metrics(
                 rolling_returns(close, return_window).dropna(), "ret"
             ),
             "return_window": return_window,
+            "bars": int(len(close)),
+            "period": {
+                "start": str(close.index.min().date()) if len(close) else None,
+                "end": str(close.index.max().date()) if len(close) else None,
+            },
         }
     )
 

@@ -674,3 +674,52 @@ def test_rolling_return_window_is_configurable():
 def test_indicators_expose_ema_for_the_price_chart():
     body = strict_json(client.get("/api/indicators?asset=NVDA&ema_fast=20&ema_slow=50"))
     assert "ema_20" in body["columns"] and "ema_50" in body["columns"]
+
+
+# ================================================================ windowed metrics
+
+
+def test_metrics_accepts_a_window():
+    body = strict_json(client.get("/api/metrics?asset=NVDA&start=2022-01-01&end=2022-12-31"))
+    assert body["bars"] == 251
+    assert body["period"]["start"] >= "2022-01-01"
+    assert body["period"]["end"] <= "2022-12-31"
+
+
+def test_windowed_metrics_differ_from_the_full_history():
+    """The Overview chart recomputes every figure for the zoomed window; if the
+    range were ignored the panel would silently show full-history numbers."""
+    full = strict_json(client.get("/api/metrics?asset=NVDA"))["summary"]
+    bear = strict_json(
+        client.get("/api/metrics?asset=NVDA&start=2022-01-01&end=2022-12-31")
+    )["summary"]
+    assert full["total_return"] > 100      # a decade of NVDA
+    assert bear["total_return"] < 0        # 2022 alone was brutal
+    assert bear["sharpe"] < 0 < full["sharpe"]
+
+
+def test_windowed_metrics_series_are_confined_to_the_window():
+    body = strict_json(client.get("/api/metrics?asset=GOLD&start=2020-01-01&end=2020-12-31"))
+    for key in ("cumulative", "drawdown"):
+        dates = [p["date"] for p in body[key]]
+        assert dates[0] >= "2020-01-01" and dates[-1] <= "2020-12-31"
+
+
+def test_windowed_metrics_take_returns_after_slicing():
+    """The window is applied to prices, then returns are taken — so the first
+    bar has no return. Slicing the return series instead would carry in one
+    return computed against a close from outside the window."""
+    body = strict_json(client.get("/api/metrics?asset=BTC&start=2023-01-01&end=2023-03-31"))
+    assert len(body["returns"]) == body["bars"] - 1
+
+
+def test_metrics_rejects_an_empty_window():
+    r = client.get("/api/metrics?asset=NVDA&start=2099-01-01")
+    assert r.status_code == 422
+    assert "no bars" in r.json()["detail"]
+
+
+def test_windowed_metrics_are_strictly_valid_json():
+    r = client.get("/api/metrics?asset=GOLD&start=2019-06-01&end=2019-09-30")
+    assert r.status_code == 200
+    strict_json(r)

@@ -335,6 +335,43 @@ equity, and counted separately as `num_open_trades`, so `num_trades` means
 *completed round trips*. Buy-and-hold therefore reports 0 trades and 1 open
 position, which is literally what it does.
 
+**D34 — Zooming has a floor, and thin windows say so (post-Phase 7).**
+Testing the zoom at every scale found two failures below ~20 bars: the
+crossover's warm-up consumed the window so no markers survived, and annualised
+statistics became nonsense — a five-bar window reported a Sharpe of 23.69 and a
+three-bar window 35.92. The arithmetic was right; the inference was garbage, and
+rendering it would have contradicted everything else in this project. Drag
+selections under 20 bars are now ignored (not clamped — silently widening what
+the user dragged is worse than doing nothing), and windows under 60 bars carry a
+caution naming which figures remain exact (return, best and worst day) and which
+do not. A 2/6 tier was added so the 20-60 bar range still produces markers:
+measured across all three assets, 3/10 found 2 trades at 20 bars where 2/6 finds 7.
+
+**D31 — Window metrics are computed by the backend, never in the browser (post-Phase 7).**
+Recomputing Sharpe and drawdown in TypeScript for the zoomed window would have
+been instant and offline. It would also have created a second implementation of
+the maths the test suite covers, free to drift from it. `/api/metrics` takes
+`start`/`end` instead and the dashboard debounces a request per zoom. The window
+is applied to *prices* before returns are taken, so the first bar of a window has
+no return — slicing the return series would carry in one return computed against
+a close from outside the window.
+
+**D32 — Signal periods scale with the zoom (post-Phase 7).**
+A 50/200 crossover produces four fills in a decade and none in a quarter, so
+zooming in showed an empty chart. Periods now track the window
+(50/200 → 20/100 → 10/50 → 5/20 → 3/10) and the toolbar names the pair in use.
+This is explicitly a *display* choice so the chart always has something to show;
+parameter selection and judgement stay on the Backtest and Research tabs, where
+they are swept and scored.
+
+**D33 — Stale-response guard keys on the window, not a counter (post-Phase 7).**
+The first implementation used a monotonic request id and compared it at resolve
+time. React StrictMode double-invokes effects in development, so the accepted
+response was routinely rejected by a later duplicate and the panel silently kept
+showing the previous window's numbers. Keying on `asset|start|end` accepts a
+response iff it still describes the window the user is looking at, regardless of
+how many times the effect fires.
+
 **D30 — The price chart zooms, and every figure follows the window (post-Phase 7).**
 Buy/sell markers are useless at full extent: 2,315 bars compress four fills into
 a few pixels. A Recharts brush plus trailing-window presets makes them legible.

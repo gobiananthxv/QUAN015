@@ -233,17 +233,23 @@ export const api = {
         `&ema_fast=${emaFast}&ema_slow=${emaSlow}`,
     ),
 
-  metrics: (asset: string) =>
+  metrics: (asset: string, period: Period = {}) =>
     request<{
       asset: string
       ann_factor: number
+      bars: number
+      period: Period
       summary: Summary
       cumulative: { date: string; cum: Num }[]
       drawdown: { date: string; dd: Num }[]
       rolling_vol: { date: string; vol: Num }[]
       rolling_returns: { date: string; ret: Num }[]
       return_window: number
-    }>(`/api/metrics?asset=${asset}`),
+    }>(
+      `/api/metrics?asset=${asset}` +
+        (period.start ? `&start=${period.start}` : '') +
+        (period.end ? `&end=${period.end}` : ''),
+    ),
 
   correlation: (window = 90) =>
     request<{

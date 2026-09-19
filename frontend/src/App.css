@@ -274,3 +274,9 @@ tr.benchmark-row { border-top: 2px solid var(--border); font-style: italic; opac
 .recharts-brush .recharts-brush-slide { fill: var(--accent); fill-opacity: .1; }
 .recharts-brush .recharts-brush-traveller rect { fill: var(--accent); }
 .recharts-brush text { fill: var(--muted); font-size: 10px; }
+
+.chip.reset { border-color: rgba(239,68,68,.4); color: #fca5a5; }
+.chip.reset:hover { border-color: var(--neg); color: var(--neg); }
+
+/* The price chart is a drag target; stop the browser selecting text on it. */
+.recharts-wrapper { user-select: none; }
