@@ -35,10 +35,10 @@ Every requirement from the problem statement, mapped to where it is delivered.
 | 6 | Maximum drawdown | 2 | ✅ Done |
 | 7 | Rolling returns | 2 | ✅ Done |
 | 8 | Correlation matrix + rolling correlation | 2 | ✅ Done |
-| 9 | Strategy engine: SMA Crossover | 4 | ⬜ Pending |
-| 10 | Strategy engine: EMA Trend | 4 | ⬜ Pending |
-| 11 | Strategy engine: Momentum | 4 | ⬜ Pending |
-| 12 | Strategy engine: Mean Reversion | 4 | ⬜ Pending |
+| 9 | Strategy engine: SMA Crossover | 4 | ✅ Done |
+| 10 | Strategy engine: EMA Trend | 4 | ✅ Done |
+| 11 | Strategy engine: Momentum | 4 | ✅ Done |
+| 12 | Strategy engine: Mean Reversion | 4 | ✅ Done |
 | 13 | Realistic simulation: initial capital, position sizing, transaction costs, entry/exit prices, portfolio value, trade count | 3 | ✅ Done |
 | 14 | Strategy vs Buy-and-Hold benchmark | 3 | ✅ Done |
 | 15 | Robustness testing (parameter / cost / period sweeps) | 5 | ⬜ Pending |
@@ -181,10 +181,37 @@ An independent hand-check of gold's first trade: gross 82.4254 × (1267.20 −
 1211.40) = 4,599; costs 204.3 commission + 102.2 slippage = 306; net 4,293 —
 matching the engine exactly.
 
-### Phase 4 — Strategies · 1.5 h · ⬜ NEXT
-Thin `Strategy` base class — `generate_signals(df, params) -> Series[-1,0,1]`.
-Four implementations, ~25 lines each: SMA Crossover, EMA Trend (+ ROC
-confirmation), Momentum (ROC threshold), Mean Reversion (Bollinger z-score).
+### Phase 4 — Strategies · 1.5 h · ✅ COMPLETE
+Thin `Strategy` base class — `generate_signals(df) -> Series[-1,0,1]` — plus a
+registry so the API and dashboard can enumerate strategies without hard-coding
+them. Four implementations: SMA Crossover, EMA Trend (+ ROC confirmation),
+Momentum (ROC threshold), Mean Reversion (Bollinger z-score, stateful).
+
+**Verification gate — passed.** 51 strategy tests (174 total):
+1. ✅ **Contract** — every strategy emits only `{-1, 0, 1}`, aligns to the input
+   index, never emits NaN, and is flat during its warm-up.
+2. ✅ **Causality** — 4 more tests confirm appending future bars changes no past
+   signal, closing the loop: causal indicators → causal strategies → lagged engine.
+3. ✅ **Known-answer paths** — each strategy checked against a constructed price
+   path where the correct signal is known in advance (sustained uptrend, sustained
+   downtrend, trend reversal, threshold boundary, dip-and-recover).
+4. ✅ **Parameter validation** — impossible combinations raise rather than
+   silently misbehave (`fast >= slow`, `entry_z <= 0`, unreachable `exit_z`).
+5. ✅ **Typo'd parameters are discarded, not silently honoured** — a misspelled
+   key must not look like it took effect.
+6. ✅ **No degenerate strategies** — exposure strictly between 1% and 99%; a
+   strategy always or never in the market is a bug or a benchmark.
+
+Mean Reversion is deliberately stateful: being oversold is an *event*, not a
+persistent condition, so it holds between entry and exit. A test proves it holds
+through bars where the entry trigger is already inactive.
+
+**Post-verification audit found a specification defect** (not an implementation
+one — SMA Crossover was cross-checked against an independent reimplementation
+and matched exactly). EMA Trend and Momentum tested strict inequalities against
+noisy quantities and whipsawed: 50% of gold's EMA Trend trades lasted ≤2 bars,
+and costs consumed 67% of its gross return. Both now use a confirmation band
+(see **D13**).
 
 ### Phase 5 — Regime attribution & robustness · 2 h · ⬜ PENDING
 - Slice each strategy's returns by regime → "when does this strategy actually work?"
@@ -275,6 +302,41 @@ equity, and counted separately as `num_open_trades`, so `num_trades` means
 *completed round trips*. Buy-and-hold therefore reports 0 trades and 1 open
 position, which is literally what it does.
 
+**D13 — Confirmation bands on EMA Trend and Momentum, chosen structurally (Phase 4).**
+Both rules originally flipped on a strict inequality against a noisy quantity.
+Diagnostics: 50% of gold's EMA Trend trades lasted ≤2 bars (Momentum 31-43%
+across assets), and cost drag reached 67% of gold's frictionless CAGR against
+2.5% for SMA Crossover. Each now enters above one threshold and exits below a
+lower one, holding in between — which makes them stateful, so `band=0` is *not*
+identical to the original stateless rule.
+
+The defaults (1% and 5%) are round numbers, deliberately **not** fitted. The
+band improves gold and NVDA but *reduces* EMA Trend's BTC return from 15,254% to
+8,558% — so choosing it on results would mean optimising after seeing the
+answers, exactly what the brief warns against. The justification is structural:
+trading noise 40% of the time is a defect identifiable without reference to any
+return figure. Phase 5's robustness sweep tests whether these defaults sit on a
+plateau or a spike.
+
+**D14 — No test may sit on a numerical boundary (Phase 4).**
+`test_momentum_hand_computed_threshold_boundary` passed only because
+`110/100 - 1` evaluates to `0.10000000000000009` rather than `0.10`, placing it
+on the wrong side of a `> 0.10` comparison by floating-point luck. Boundary
+tests are now written clear of the threshold (+8% against a 5%/10% pair), so
+they assert behaviour rather than float representation.
+
+**D11 — Strategies never lag their own signals (Phase 4).**
+A strategy reports the position it wants *as of the current bar's close*, and
+the engine alone applies the one-bar execution lag. Splitting the responsibility
+would let a carelessly written strategy double-lag (quietly pessimistic) or
+forget to lag (look-ahead). One rule, enforced in one place.
+
+**D12 — Unknown parameters are dropped, not passed through (Phase 4).**
+`Strategy.__post_init__` keeps only keys present in `defaults`. A typo like
+`{"windwo": 5}` would otherwise sit unused in the params dict while the strategy
+silently ran on defaults, and the result would be reported as if the parameter
+had taken effect.
+
 **D10 — Gross P&L is measured at unslipped prices (Phase 3).**
 Slippage is a cost, so it belongs in the cost line, not buried in a worse entry
 price. Trades record both the fill price and the reference open, which makes
@@ -308,7 +370,7 @@ production SLOs.
 
 - ✅ 10 years of validated history for 3 assets across 3 asset classes
 - ✅ All 7 required indicator/metric families computed and verified
-- 🔨 Engine ready with costs, sizing and a like-for-like benchmark; 4 strategies pending
+- ✅ 4 strategies backtested with costs, sizing and a like-for-like benchmark
 - ✅ Look-ahead bias structurally prevented **and** proven by a regression test
 - ⬜ Regime attribution and a robustness surface, both visualised
 - ⬜ Dashboard covering all 8 required visualisations
