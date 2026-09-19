@@ -335,6 +335,15 @@ equity, and counted separately as `num_open_trades`, so `num_trades` means
 *completed round trips*. Buy-and-hold therefore reports 0 trades and 1 open
 position, which is literally what it does.
 
+**D30 — The price chart zooms, and every figure follows the window (post-Phase 7).**
+Buy/sell markers are useless at full extent: 2,315 bars compress four fills into
+a few pixels. A Recharts brush plus trailing-window presets makes them legible.
+The part that matters is that zooming is not cosmetic — the toolbar recomputes
+the period return, fill counts and time invested for whatever is on screen, the
+volume panel slices to the same range, and a fills table appears listing the
+trades that opened *or closed* inside the window. Magnifying a picture answers
+nothing; recomputing against it answers "what happened here?".
+
 **D27 — Shorts pay a borrow fee (post-Phase 7).**
 `allow_short` existed but holding a short cost nothing: a 300-bar short on a
 flat price finished at exactly its starting equity. Real shorts pay borrow for

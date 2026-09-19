@@ -175,6 +175,13 @@ Log-scale price with SMA 50/200 and EMA 50 overlaid, volume, green bands marking
 the periods a crossover strategy held a position, and green/red triangles at its
 **actual buy and sell fills** — taken from the trade log, not re-derived.
 
+**The chart zooms.** Drag the handles beneath it or use the All/5Y/3Y/1Y/6M/3M
+buttons. Across a full decade the fill markers are unreadable; zoomed to a year
+they are obvious. Everything follows the visible window — the bar above the
+chart recomputes the period return, the fill counts and the time invested, the
+volume panel tracks the same range, and a **Fills in view** table appears
+listing only the trades that opened or closed inside it.
+
 Log scale matters: on a linear axis, a decade of NVIDIA compresses its first
 eight years into a flat line against the last two.
 
@@ -499,6 +506,15 @@ Stated plainly, because an unstated simplification is a claim.
 What *is* modelled: commission and slippage on both sides, short borrow cost per
 bar, split and dividend adjustment, per-asset annualisation, and next-open
 execution.
+
+### Reading the charts
+
+| Interaction | What it does |
+|:--|:--|
+| Drag the brush handles | Zoom the price chart to any window |
+| **All / 5Y / 3Y / 1Y / 6M / 3M** | Jump to a trailing window |
+| Hover any chart | Crosshair tooltip with every series at that date |
+| Zoom in on Overview | Window stats, volume and the fills table all follow |
 
 ### Testing
 
