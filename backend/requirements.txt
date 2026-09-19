@@ -1,5 +1,3 @@
-# Deliberately minimal: no yfinance, no pyarrow, no DB, no cache server.
-# Market data comes from the Yahoo chart API via requests (see app/data/sources.py).
 fastapi
 uvicorn[standard]
 pandas
@@ -7,3 +5,13 @@ numpy
 requests
 pytest
 httpx          # required by fastapi.testclient
+
+# ML Market Regime Detection
+yfinance>=0.2.40
+hmmlearn>=0.3.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+plotly>=5.15.0
+seaborn>=0.12.0
+scipy>=1.11.0
+joblib>=1.3.0
