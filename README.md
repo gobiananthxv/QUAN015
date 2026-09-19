@@ -23,6 +23,7 @@ every result for the four ways backtests normally lie.
 | [Quick start](#quick-start) | Get it running in one command |
 | [What you get](#what-you-get) | The five views and what each answers |
 | [How it works](#how-it-works) | The pipeline, stage by stage |
+| [The execution engine](#the-execution-engine-and-what-changed-in-it) | What the engine does, and how it changed in Phase 8 |
 | [Where the data comes from](#where-the-data-comes-from) | Why it reads a snapshot, not a live feed |
 | [What the platform found](#what-the-platform-found) | Real results, including the unflattering ones |
 | [Why you can trust the numbers](#why-you-can-trust-the-numbers) | Bias controls and the decisions behind them |
@@ -355,6 +356,145 @@ The signal is a **target exposure**, not a direction, so the engine sizes to it
 literally rather than taking its sign. The four directional strategies only ever
 emit `-1`, `0` or `1`, which is the special case; Volatility Target emits
 anything between `0` and its cap.
+
+### The execution engine, and what changed in it
+
+The engine was rewritten in Phase 8 to size positions continuously. This is the
+single largest change to the core of the platform, so it is worth setting out
+what moved, what did not, and why it was worth doing.
+
+#### Before: a switch
+
+The old engine took the **sign** of a signal and traded a fixed fraction of
+equity on it:
+
+```python
+tgt = np.sign(target)              # -1, 0 or +1 — nothing else survives
+budget = cash * cfg.position_pct   # one number, fixed for the whole run
+size = budget / (fill * (1 + comm_rate))
+```
+
+Two consequences followed from those three lines:
+
+1. **A strategy could only be all-in or all-out.** `sign()` discards magnitude,
+   so a strategy asking for 60% exposure and one asking for 200% were executed
+   identically.
+2. **Position size was an account setting, not a decision.** `position_pct` was
+   chosen once, in the config, and never varied. A strategy could not reduce
+   size going into a turbulent month and restore it afterwards, because it had
+   no way to say so.
+
+#### After: a dial
+
+A signal is now a **target exposure** — a signed real number the engine sizes to
+literally, from equity marked at the current bar's open:
+
+```python
+tgt = target.to_numpy() * cfg.position_pct   # magnitude preserved
+equity_now = cash + pos * ref                # sized from equity, not cash
+want = desired * equity_now / (fill * (1 + comm_rate))
+qty  = want - pos                            # trade the difference, not the whole position
+```
+
+| | Old engine | New engine |
+|:--|:--|:--|
+| Signal alphabet | `{-1, 0, 1}` | any real number |
+| Position size | `position_pct`, fixed for the run | decided per bar by the strategy |
+| Changing size | close and reopen | trade the difference |
+| Leverage | not expressible | exposure > 1.0, financed per bar |
+| A "trade" | one entry, one exit | a span from leaving 0 to returning, with rebalances inside it |
+| Cost model | commission, slippage, short borrow | + interest on borrowed cash |
+| Turnover control | none | `no_trade_band` |
+
+#### Why it was worth doing
+
+Because **every technique that actually manages risk is a sizing technique.**
+Volatility targeting, risk parity, Kelly sizing, drawdown control — none of them
+are about *whether* to be in the market, all of them are about *how much*. Four
+strategies answering "am I in or out?" is a timing platform. The brief asks for a
+quantitative one, and an engine that cannot vary size cannot express the
+quantitative part.
+
+The evidence that this was a real gap rather than a theoretical one: the first
+strategy built on it, [Volatility Target](#does-any-of-it-survive-scrutiny),
+scores the **highest robustness in the project** — 0.94 on NVDA, 0.92 on BTC,
+0.83 on GOLD. It holds three assets whose natural volatilities are 50%, 17% and
+67% at a common 25–31%, which is the whole point of it. None of that was
+expressible a phase earlier.
+
+#### How a bar is processed now
+
+Every bar runs the same six steps, in this order:
+
+| Step | What happens | Why it is there |
+|:--|:--|:--|
+| 1 | Read the target the strategy set on the **previous** bar | The look-ahead guard, unchanged |
+| 2 | Decide whether it is worth trading (`no_trade_band`) | A continuous target would otherwise rebalance every bar and pay commission for it |
+| 3 | Close out fully if going flat or flipping sign | Exits and flips are decisions, never suppressed by the band |
+| 4 | Size to the target and trade the **difference** | Where the old engine closed and reopened |
+| 5 | Charge carry: borrow on shorts, interest on negative cash | A levered position that paid nothing to be levered would be fiction |
+| 6 | Mark to market at the close | Unchanged |
+
+Step 4 hides one subtlety worth naming. The fill price depends on which way you
+trade, and how far you trade depends on the fill — a circular dependency. The
+engine resolves it by computing the target against *both* the buy fill and the
+sell fill and keeping whichever is self-consistent. Guessing the direction first
+is what the original implementation did, and it was wrong on 1 leg in 59 (GOLD),
+64 (BTC) and 106 (NVDA) — and on **zero** legs once a 10% no-trade band was
+switched on, because the band removes exactly the small adjustments where the
+commission term can flip the sign. A banded run alone would never have exposed
+it. See [the bug it caused](#the-identity-that-keeps-it-honest).
+
+#### What deliberately did not change
+
+`{-1, 0, 1}` is a subset of the reals, so the four directional strategies take
+the identical path through the new code. This was the safety argument for
+attempting the rewrite at all, and it is checked rather than assumed:
+
+> **All 318 pre-existing tests passed unchanged after the rewrite** — including
+> the hand-computed trade arithmetic, the execution-lag test and the fourteen
+> causality tests. Not one assertion was relaxed to accommodate the new engine.
+
+A separate test asserts the property directly: run a constant `1.0` signal over
+real data and every bar's position must be in `{0, 1}` with zero rebalances.
+
+#### What it costs
+
+Honest ledger, because the change was not free:
+
+- **"Trade" means something wider now.** A vol-targeted position may never close;
+  it is one open trade with 362 rebalances. Trade-count, win-rate and
+  profit-factor are computed over *closed* trades and so read `0`, `—`, `—` for
+  such a strategy. The dashboard shows rebalances, average size and peak size
+  instead, rather than presenting a 0% win rate that means "nothing has closed
+  yet" as though it meant "it lost every trade".
+- **Two more knobs to defend.** `financing_bps_annual` and `no_trade_band` are
+  both live inputs on the Backtest tab, because a levered result is only as good
+  as the rate you can borrow at, and a continuous strategy's turnover is only as
+  good as the band that controls it.
+- **Entry-price arithmetic no longer describes a trade.** Buy 100 at 100, add 100
+  at 50, sell 200 at 80 — no pair of entry and exit prices produces the right
+  answer. Each trade therefore carries a shadow cash account kept at unslipped
+  reference prices, which *is* the gross P&L once the position is flat.
+
+#### The identity that keeps it honest
+
+```
+final_equity == initial_capital + Σ net_pnl,  exactly
+```
+
+Every leg of every trade must reconcile: commission and slippage recorded on the
+trade have to equal the cash the engine actually moved. This is checked on live
+data by `strategy_report.py` and by a regression test, and **it caught a real bug
+the unit tests missed** — the fill-direction error described above, which
+credited slippage to the trade instead of charging it. It showed up as equity
+drifting from the trade log by 0.001% over a decade: far too small to notice by
+eye, impossible to hide from an exact identity.
+
+That is the argument for keeping the loop explicit rather than vectorising it.
+A `position × returns` shortcut produces an equity curve nobody can audit; this
+one produces a trade log whose every line has to add up, and when it does not,
+something says so.
 
 ---
 
