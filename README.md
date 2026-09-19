@@ -22,6 +22,7 @@ against a buy-and-hold benchmark with realistic execution costs.
 - [Bias controls](#bias-controls) — how the four named failure modes are prevented
 - [Project layout](#project-layout)
 - [Data quality](#data-quality)
+- [Demo walkthrough](DEMO.md) — a scripted three-minute tour
 
 ---
 
@@ -36,10 +37,11 @@ against a buy-and-hold benchmark with realistic execution costs.
 | 4 | Strategies | ✅ Complete |
 | 5 | Regime attribution + robustness | ✅ Complete |
 | 6 | REST API + dashboard | ✅ Complete |
-| 7 | Hardening + demo | ⬜ Pending |
+| 7 | Hardening + demo | ✅ Complete |
 
-**262 tests passing.** Full phase breakdown and decision log in
-[`PROJECT_PLAN.md`](PROJECT_PLAN.md).
+**262 tests passing**, all seven phase gates green. Full breakdown and decision
+log in [`PROJECT_PLAN.md`](PROJECT_PLAN.md); the walkthrough is in
+[`DEMO.md`](DEMO.md).
 
 ---
 
@@ -129,6 +131,29 @@ Requires Python 3.11+. No database, no Redis, no Docker.
 > Activating the venv first (`source .venv/bin/activate` or
 > `.venv\Scripts\Activate.ps1`) lets you type plain `python` instead.
 
+### One command
+
+```bash
+./run.sh
+```
+
+```powershell
+.un.ps1
+```
+
+Creates the virtualenv and installs dependencies if they are missing, then
+starts the API on `:8000` and the dashboard on `:5173`. Ctrl-C stops both.
+
+To run every phase gate — the full test suite plus all five verification
+scripts — in one go:
+
+```bash
+./verify.sh
+```
+
+<details>
+<summary>Manual setup, if you prefer to run the pieces yourself</summary>
+
 ### Install
 
 **macOS / Linux**
@@ -184,7 +209,7 @@ cd backend && .venv/bin/python scripts/strategy_report.py
 cd backend && .venv/bin/python scripts/robustness_report.py
 ```
 
-### Run the platform
+### Run the pieces separately
 
 Two processes. Start the API first:
 
@@ -215,6 +240,8 @@ cd backend && .venv/bin/python scripts/bootstrap_data.py --refresh
 ```bash
 cd backend && ./.venv/Scripts/python.exe scripts/bootstrap_data.py --refresh
 ```
+
+</details>
 
 ---
 
@@ -418,7 +445,7 @@ not a disclaimer.
 | Risk | Defence |
 |:--|:--|
 | **Look-ahead bias** | Signals are shifted one bar and filled at the next open. Trading on a close you could not have observed is impossible by construction. Pinned by a dedicated test. |
-| **Data leakage** | Indicators use only rolling and ewm windows; regime thresholds use expanding quantiles. 15 causality tests confirm that appending future bars never changes a past value. |
+| **Data leakage** | Indicators use only rolling and ewm windows; regime thresholds use expanding quantiles. 14 causality tests confirm that appending future bars never changes a past value — 9 indicators, 4 strategies, and the regime labels. |
 | **Unrealistic execution** | Commission and slippage charged on notional on both sides, with slippage always moving price against the trade. The benchmark pays the same entry cost. |
 | **Over-optimisation** | Parameter sweeps report the whole Sharpe surface plus median, worst, share-positive and a neighbour comparison — never just the maximum. `plateau_report` returns an explicit verdict, and it labels our own Mean Reversion strategy *fragile*. |
 
@@ -456,6 +483,9 @@ frontend/
     format.ts              Display formatting; null renders as an em dash
     App.tsx                Shell, tabs, asset picker, disclaimer
     views/                 Overview · Risk · Correlation · Backtest · Research
+run.sh · run.ps1           Start API + dashboard
+verify.sh                  Run every phase gate
+DEMO.md                    Scripted three-minute walkthrough
 docs/
   problem-statement.pdf
   PROJECT_PLAN_FIN_original.md

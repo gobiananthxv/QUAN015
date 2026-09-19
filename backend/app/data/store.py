@@ -50,15 +50,6 @@ def quality_report(key: str) -> dict:
     return _REPORTS[key]
 
 
-def refresh_all() -> dict[str, dict]:
-    """Re-fetch every asset. Used by the bootstrap script and /data/refresh."""
-    out: dict[str, dict] = {}
-    for key in ASSETS:
-        load_asset(key, refresh=True)
-        out[key] = quality_report(key)
-    return out
-
-
 def cache_status() -> list[dict]:
     """What is cached right now — surfaced by the API so the UI can show it."""
     rows = []

@@ -45,7 +45,7 @@ Every requirement from the problem statement, mapped to where it is delivered.
 | 16 | Market regime analysis (bull / bear / high-vol / low-vol) | 5 | ✅ Done |
 | 17 | Dashboard: prices, SMA/EMA, returns & volatility, drawdowns, correlation heatmap, buy/sell signals, equity curves, strategy vs benchmark | 6 | ✅ Done |
 | 18 | Bias minimisation: look-ahead, data leakage, unrealistic execution, over-optimisation | 3 + 5 | ✅ Done (4 of 4) |
-| 19 | "Not a guarantee of future returns" disclaimer | 7 | ⬜ Pending |
+| 19 | "Not a guarantee of future returns" disclaimer | 7 | ✅ Done |
 
 **Explicitly out of scope** (listed as *Future Scope* in the problem statement,
 and correctly deferred): portfolio optimisation, Monte Carlo, VaR, ML-based
@@ -250,10 +250,31 @@ as a real value and silently distort a chart. The dashboard confirms this
 end-to-end — NVDA's crossover has no losing trades, so its profit factor is
 `inf`, and the UI shows an em dash.
 
-### Phase 7 — Harden & demo · 2.5 h · ⬜ PENDING
-~20 pytest cases on the maths that must be correct, including the look-ahead
-regression test. README, architecture diagram, persistent research-use
-disclaimer in the UI, rehearsed 3-minute demo.
+### Phase 7 — Harden & demo · 2.5 h · ✅ COMPLETE
+Delivered: `run.sh` / `run.ps1` (one command, bootstraps deps if missing),
+`verify.sh` (every gate in one run), [`DEMO.md`](DEMO.md) (scripted walkthrough
+with anticipated questions and a failure-recovery table), final README pass.
+
+The disclaimer appears in three places: a persistent banner on every dashboard
+view, the `/health` response, and the OpenAPI description at `/docs`.
+
+**Verification gate — passed.**
+1. ✅ Dead-code audit: one genuinely unused function (`store.refresh_all`) found
+   and removed; no unused imports, no TODO/FIXME left in the tree.
+2. ✅ **Every numeric claim in `DEMO.md` checked against the live API.** Two were
+   wrong and were corrected — see below.
+3. ✅ The scripted demo path was walked in a real browser end to end.
+4. ✅ Responsive check at 375 px: no horizontal overflow; wide tables scroll
+   inside their own container.
+5. ✅ `./verify.sh` → 262 tests plus all five scripts, green from a clean shell.
+
+**The demo script contained two false claims, caught by checking rather than
+assuming.** It said switching to Mean Reversion on NVDA would show the *fragile*
+verdict — on NVDA that strategy actually scores 0.63 and reads *robust*. The
+fragile verdict lives on GOLD (0.10) and BTC (0.24). The cost-cliff claim ("goes
+negative at 25 bps") was also GOLD's, not NVDA's. The script now switches asset
+to GOLD at that point, which is what the numbers support. Separately, the
+causality-test count was stated as eleven; it is fourteen.
 
 ---
 
@@ -441,7 +462,7 @@ production SLOs.
 - ✅ All 7 required indicator/metric families computed and verified
 - ✅ 4 strategies backtested with costs, sizing and a like-for-like benchmark
 - ✅ Look-ahead bias structurally prevented **and** proven by a regression test
-- 🔨 Regime attribution and robustness surfaces computed; visualisation pending (Phase 6)
+- ✅ Regime attribution and robustness surfaces computed and visualised
 - ✅ Dashboard covering all 8 required visualisations
-- ⬜ Core maths covered by tests that verify values, not just absence of crashes
-- ⬜ Runs end-to-end offline from the committed cache
+- ✅ Core maths covered by tests that verify values, not just absence of crashes
+- ✅ Runs end-to-end offline from the committed cache
