@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 import { api, type Num } from '../api'
 import { ErrorState, Loading, Note, Panel } from '../components/Common'
+import { Figure, Insight } from '../components/Insight'
 import { num, tipNum3 } from '../format'
 
 const PAIR_COLORS = ['#4f9cf9', '#f59e0b', '#22c55e', '#a78bfa', '#ef4444', '#14b8a6']
@@ -42,8 +43,46 @@ export function Correlation() {
   const lookup = new Map(data.matrix.map((c) => [`${c.a}|${c.b}`, c.value]))
   const pairs = Object.keys(data.rolling[0] ?? {}).filter((k) => k !== 'date')
 
+  // Find the pair whose relationship moved most — that is the headline.
+  let widest = { pair: '', min: 0, max: 0, swing: -1, staticCorr: 0 }
+  for (const pair of pairs) {
+    const values = data.rolling
+      .map((r) => r[pair])
+      .filter((v): v is number => typeof v === 'number')
+    if (!values.length) continue
+    const min = Math.min(...values)
+    const max = Math.max(...values)
+    if (max - min > widest.swing) {
+      const [a, b] = pair.split('~')
+      widest = {
+        pair: pair.replace('~', ' / '),
+        min,
+        max,
+        swing: max - min,
+        staticCorr: Number(lookup.get(`${a}|${b}`) ?? 0),
+      }
+    }
+  }
+
   return (
     <>
+      <Insight
+        label="Why one correlation number is not enough"
+        tone="caution"
+        headline={
+          <>
+            {widest.pair} look almost unrelated overall at{' '}
+            <Figure value={num(widest.staticCorr, 2)} /> — yet their 90-day
+            correlation ranged from <Figure value={num(widest.min, 2)} tone="good" />{' '}
+            to <Figure value={num(widest.max, 2)} tone="bad" /> across the period.
+          </>
+        }
+      >
+        The full-sample figure averages those two opposite regimes into something
+        that never actually happened. Diversification measured once is not
+        diversification you can rely on.
+      </Insight>
+
       <Panel
         title="Correlation matrix"
         subtitle={`Daily returns · ${data.observations.toLocaleString()} common trading days`}

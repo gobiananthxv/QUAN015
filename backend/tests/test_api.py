@@ -352,3 +352,302 @@ def test_an_infinite_sortino_actually_reaches_the_api_as_null():
 
     assert sortino_ratio(pd.Series([0.01] * 100), 252, rf=0.0) == math.inf
     assert clean(sortino_ratio(pd.Series([0.01] * 100), 252, rf=0.0)) is None
+
+
+# ================================================================ snapshot / refresh
+
+
+def test_assets_reports_snapshot_state():
+    body = strict_json(client.get("/api/assets"))
+    assert "snapshot" in body
+    entry = {s["asset"]: s for s in body["snapshot"]}["NVDA"]
+    assert entry["available"] is True
+    assert entry["rows"] > 2000
+    assert entry["start"] < entry["end"]
+
+
+def test_reading_data_never_touches_the_network(monkeypatch):
+    """The central claim of the snapshot design.
+
+    Every read endpoint must be satisfiable from the committed CSVs. If any of
+    them silently fetched, results would change under the user mid-session and
+    the platform would stop working offline.
+    """
+    import app.data.store as store
+
+    def explode(*_a, **_k):
+        raise AssertionError("a read endpoint reached the network")
+
+    monkeypatch.setattr(store, "fetch_ohlcv", explode)
+
+    for path in (
+        "/api/assets",
+        "/api/ohlcv?asset=NVDA",
+        "/api/indicators?asset=GOLD",
+        "/api/metrics?asset=BTC",
+        "/api/correlation",
+        "/api/regime?asset=NVDA",
+        "/api/panel",
+    ):
+        assert client.get(path).status_code == 200, path
+
+    assert client.post("/api/backtest", json={"asset": "BTC", "strategy": "momentum"}).status_code == 200
+
+
+def test_refresh_calls_the_provider_and_reports_what_changed(monkeypatch):
+    """Refresh is the one endpoint allowed to fetch. Stubbed so the suite stays
+    offline and fast — we assert the plumbing, not Yahoo's uptime."""
+    import app.data.store as store
+
+    calls: list[str] = []
+    real = store.load_asset
+
+    def spy(key, refresh=False):
+        if refresh:
+            calls.append(key)
+        return real(key, refresh=False)  # never actually re-download in tests
+
+    monkeypatch.setattr(store, "load_asset", spy)
+
+    body = strict_json(
+        client.post("/api/data/refresh", json={"assets": ["NVDA"], "force": True})
+    )
+    assert calls == ["NVDA"], "refresh must request exactly the asset asked for"
+    assert [u["asset"] for u in body["updated"]] == ["NVDA"]
+    assert body["failed"] == []
+    assert len(body["snapshot"]) == 3
+
+
+def test_refresh_with_no_body_updates_everything(monkeypatch):
+    import app.data.store as store
+
+    calls: list[str] = []
+    real = store.load_asset
+
+    def spy(key, refresh=False):
+        if refresh:
+            calls.append(key)
+        return real(key, refresh=False)
+
+    monkeypatch.setattr(store, "load_asset", spy)
+
+    body = strict_json(client.post("/api/data/refresh", json={"force": True}))
+    assert set(calls) == {"GOLD", "BTC", "NVDA"}
+    assert len(body["updated"]) == 3
+
+
+def test_refresh_rejects_an_unknown_asset():
+    r = client.post("/api/data/refresh", json={"assets": ["DOGECOIN"]})
+    assert r.status_code == 404
+
+
+def test_refresh_reports_a_partial_failure_without_failing_the_whole_call(monkeypatch):
+    """One unreachable ticker must not leave the caller with no information
+    about the two that did update."""
+    import app.data.store as store
+
+    real = store.load_asset
+
+    def flaky(key, refresh=False):
+        if refresh and key == "BTC":
+            raise RuntimeError("provider timeout")
+        return real(key, refresh=False)
+
+    monkeypatch.setattr(store, "load_asset", flaky)
+
+    body = strict_json(client.post("/api/data/refresh", json={"force": True}))
+    assert {u["asset"] for u in body["updated"]} == {"GOLD", "NVDA"}
+    assert [f["asset"] for f in body["failed"]] == ["BTC"]
+    assert "provider timeout" in body["failed"][0]["error"]
+
+
+def test_refresh_returns_502_only_when_everything_fails(monkeypatch):
+    """Plain reads still succeed here on purpose: after a failed refresh the
+    endpoint reports what remains on disk, so the caller learns the provider is
+    down *and* that the previous snapshot is intact."""
+    import app.data.store as store
+
+    real = store.load_asset
+
+    def down(key, refresh=False):
+        if refresh:
+            raise RuntimeError("provider unreachable")
+        return real(key, refresh=False)
+
+    monkeypatch.setattr(store, "load_asset", down)
+
+    r = client.post("/api/data/refresh", json={"force": True})
+    assert r.status_code == 502
+    assert "unreachable" in r.json()["detail"]
+
+
+def test_a_failed_refresh_leaves_the_snapshot_usable(monkeypatch):
+    """A provider outage must not take the platform down with it."""
+    import app.data.store as store
+
+    real = store.load_asset
+
+    def down(key, refresh=False):
+        if refresh:
+            raise RuntimeError("provider unreachable")
+        return real(key, refresh=False)
+
+    monkeypatch.setattr(store, "load_asset", down)
+
+    client.post("/api/data/refresh", json={"force": True})
+    assert client.get("/api/ohlcv?asset=NVDA").status_code == 200
+    assert client.post("/api/backtest", json={"asset": "NVDA", "strategy": "momentum"}).status_code == 200
+
+
+def test_refresh_skips_assets_fetched_within_the_last_day(monkeypatch):
+    """Bars are daily, so a second fetch inside 24h rewrites identical rows.
+
+    Skipping is reported explicitly rather than folded into "updated" — pressing
+    Refresh twice should say "already current", not pretend to have worked.
+    """
+    import app.data.store as store
+
+    def explode(*_a, **_k):
+        raise AssertionError("refresh fetched despite a fresh snapshot")
+
+    monkeypatch.setattr(store, "fetch_ohlcv", explode)
+
+    body = strict_json(client.post("/api/data/refresh", json={"assets": ["NVDA"]}))
+    assert body["updated"] == []
+    assert [s["asset"] for s in body["skipped"]] == ["NVDA"]
+    assert body["skipped"][0]["age_hours"] < 24
+    assert "daily" in body["skipped"][0]["reason"]
+
+
+def test_refresh_force_overrides_the_daily_skip(monkeypatch):
+    import app.data.store as store
+
+    calls: list[str] = []
+    real = store.load_asset
+
+    def spy(key, refresh=False):
+        if refresh:
+            calls.append(key)
+        return real(key, refresh=False)
+
+    monkeypatch.setattr(store, "load_asset", spy)
+
+    body = strict_json(
+        client.post("/api/data/refresh", json={"assets": ["NVDA"], "force": True})
+    )
+    assert calls == ["NVDA"]
+    assert body["skipped"] == []
+
+
+def test_an_all_skipped_refresh_is_not_an_error():
+    """Nothing to do is a success, not a 502."""
+    r = client.post("/api/data/refresh", json={})
+    assert r.status_code == 200
+    body = strict_json(r)
+    assert len(body["skipped"]) == 3
+    assert body["failed"] == []
+
+
+# ================================================================ backtest period
+
+
+def test_backtest_accepts_a_date_window():
+    body = strict_json(
+        client.post(
+            "/api/backtest",
+            json={
+                "asset": "NVDA",
+                "strategy": "sma_crossover",
+                "start": "2020-01-01",
+                "end": "2022-12-31",
+            },
+        )
+    )
+    dates = body["strategy"]["curves"]["dates"]
+    assert dates[0] >= "2020-01-01" and dates[-1] <= "2022-12-31"
+    assert body["period"] == {"start": "2020-01-01", "end": "2022-12-31"}
+
+
+def test_windowed_backtest_is_shorter_than_the_full_history():
+    full = strict_json(
+        client.post("/api/backtest", json={"asset": "NVDA", "strategy": "momentum"})
+    )
+    win = strict_json(
+        client.post(
+            "/api/backtest",
+            json={"asset": "NVDA", "strategy": "momentum", "start": "2022-01-01"},
+        )
+    )
+    assert len(win["strategy"]["curves"]["dates"]) < len(full["strategy"]["curves"]["dates"])
+
+
+def test_benchmark_is_restricted_to_the_same_window():
+    """Comparing a windowed strategy against a full-history benchmark would be
+    comparing two different periods — the single worst thing this feature could
+    silently do."""
+    body = strict_json(
+        client.post(
+            "/api/backtest",
+            json={
+                "asset": "NVDA",
+                "strategy": "sma_crossover",
+                "start": "2021-01-01",
+                "end": "2021-12-31",
+            },
+        )
+    )
+    assert body["strategy"]["curves"]["dates"] == body["benchmark"]["curves"]["dates"]
+
+
+def test_signals_are_regenerated_inside_the_window_not_trimmed():
+    """A sub-period must be a genuine out-of-sample run.
+
+    Slicing a full-history signal series would let indicator values at the start
+    of the window carry information from before it. Regenerating inside the
+    window means the warm-up happens again, so the windowed run holds a position
+    on strictly fewer of its early bars.
+    """
+    win = strict_json(
+        client.post(
+            "/api/backtest",
+            json={"asset": "NVDA", "strategy": "sma_crossover", "start": "2021-01-01"},
+        )
+    )
+    # 50/200 crossover needs 200 bars of warm-up, so the window opens flat.
+    assert sum(win["strategy"]["curves"]["position"][:150]) == 0
+
+
+def test_backtest_rejects_an_empty_window():
+    r = client.post(
+        "/api/backtest",
+        json={"asset": "NVDA", "strategy": "momentum", "start": "2099-01-01"},
+    )
+    assert r.status_code == 422
+    assert "no bars" in r.json()["detail"]
+
+
+def test_compare_accepts_a_date_window():
+    body = strict_json(
+        client.post(
+            "/api/backtest/compare",
+            json={"asset": "GOLD", "start": "2021-01-01", "end": "2023-12-31"},
+        )
+    )
+    assert body["period"]["start"] == "2021-01-01"
+    for run in body["runs"]:
+        assert run["curves"]["dates"][0] >= "2021-01-01"
+    assert body["benchmark"]["curves"]["dates"] == body["runs"][0]["curves"]["dates"]
+
+
+def test_compare_rejects_an_empty_window():
+    r = client.post("/api/backtest/compare", json={"asset": "GOLD", "start": "2099-01-01"})
+    assert r.status_code == 422
+
+
+def test_windowed_results_are_strictly_valid_json():
+    r = client.post(
+        "/api/backtest/compare",
+        json={"asset": "BTC", "start": "2024-01-01", "end": "2024-06-30"},
+    )
+    assert r.status_code == 200
+    strict_json(r)

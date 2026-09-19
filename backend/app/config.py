@@ -5,8 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-CACHE_DIR = BASE_DIR / "data_cache"
-CACHE_DIR.mkdir(exist_ok=True)
+# A committed snapshot of market data, not a cache: it has no TTL and never
+# expires on its own. Backtests must be reproducible, so the data a result was
+# computed from is pinned in the repository and only changes when someone
+# explicitly refreshes it.
+SNAPSHOT_DIR = BASE_DIR / "data_snapshot"
+SNAPSHOT_DIR.mkdir(exist_ok=True)
 
 # History window pulled from the provider on a cold cache.
 HISTORY_PERIOD = "10y"

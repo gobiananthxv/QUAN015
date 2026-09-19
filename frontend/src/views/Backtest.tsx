@@ -13,11 +13,20 @@ import {
   api,
   DEFAULT_CONFIG,
   type BacktestConfig,
+  type Period,
   type RunResult,
   type StrategyInfo,
 } from '../api'
 import { ErrorState, Loading, Note, Panel, Stat } from '../components/Common'
+import { Figure, Insight, type Tone } from '../components/Insight'
 import { int, money, num, pct, tipMoney, STRATEGY_COLORS } from '../format'
+
+/** ISO date n years before today, for the period presets. */
+function isoYearsAgo(n: number): string {
+  const d = new Date()
+  d.setFullYear(d.getFullYear() - n)
+  return d.toISOString().slice(0, 10)
+}
 
 export function Backtest({
   asset,
@@ -29,6 +38,7 @@ export function Backtest({
   const [name, setName] = useState('sma_crossover')
   const [params, setParams] = useState<Record<string, number>>({})
   const [config, setConfig] = useState<BacktestConfig>(DEFAULT_CONFIG)
+  const [period, setPeriod] = useState<Period>({})
   const [result, setResult] = useState<{ strategy: RunResult; benchmark: RunResult } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -41,29 +51,65 @@ export function Backtest({
    * defaults and immediately runs, but `params` would still hold the previous
    * render's value, so the first backtest never fired.
    */
-  const runWith = (p: Record<string, number>, cfg: BacktestConfig) => {
+  const runWith = (p: Record<string, number>, cfg: BacktestConfig, per: Period = period) => {
     setBusy(true)
     setError(null)
     api
-      .backtest(asset, name, p, cfg)
+      .backtest(asset, name, p, cfg, per)
       .then(setResult)
       .catch((e) => setError(e.message))
       .finally(() => setBusy(false))
   }
 
-  const run = () => runWith(params, config)
+  const run = () => runWith(params, config, period)
+
+  /** Preset windows. Each is a genuine out-of-sample slice: signals are
+   *  regenerated inside the window rather than trimmed from a full-history run. */
+  const presets: { label: string; period: Period }[] = [
+    { label: 'Full history', period: {} },
+    { label: 'Last 5 years', period: { start: isoYearsAgo(5) } },
+    { label: 'Last 3 years', period: { start: isoYearsAgo(3) } },
+    { label: 'Last 1 year', period: { start: isoYearsAgo(1) } },
+    { label: 'Covid era (2020–2021)', period: { start: '2020-01-01', end: '2021-12-31' } },
+    { label: 'Bear market (2022)', period: { start: '2022-01-01', end: '2022-12-31' } },
+  ]
+
+  const applyPreset = (per: Period) => {
+    setPeriod(per)
+    runWith(params, config, per)
+  }
 
   // Selecting a strategy (or asset) resets to that strategy's defaults and runs.
   useEffect(() => {
     if (!info) return
     const defaults = { ...info.defaults }
     setParams(defaults)
-    runWith(defaults, config)
+    runWith(defaults, config, period)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [asset, name, info])
 
   const strat = result?.strategy
   const bench = result?.benchmark
+
+  /**
+   * The verdict, derived from the two result sets rather than written by hand.
+   * Return and drawdown are judged separately because a strategy losing on
+   * return while cutting drawdown is a trade-off, not a failure — and saying so
+   * is more useful than a single thumbs up or down.
+   */
+  const verdict = (() => {
+    if (!strat || !bench) return null
+    const sr = strat.stats.total_return ?? 0
+    const br = bench.stats.total_return ?? 0
+    const sd = strat.stats.max_drawdown ?? 0
+    const bd = bench.stats.max_drawdown ?? 0
+    const wonReturn = sr > br
+    const wonDrawdown = sd > bd // less negative is shallower
+    const relative = (1 + sr) / (1 + br) - 1
+
+    const tone: Tone = wonReturn && wonDrawdown ? 'good' : wonReturn || wonDrawdown ? 'caution' : 'bad'
+    return { sr, br, sd, bd, wonReturn, wonDrawdown, relative, tone }
+  })()
 
   const equity =
     strat && bench
@@ -129,9 +175,45 @@ export function Backtest({
             />
           </label>
 
+          <label>
+            from
+            <input
+              type="date"
+              value={period.start ?? ''}
+              onChange={(e) => setPeriod({ ...period, start: e.target.value || undefined })}
+            />
+          </label>
+          <label>
+            to
+            <input
+              type="date"
+              value={period.end ?? ''}
+              onChange={(e) => setPeriod({ ...period, end: e.target.value || undefined })}
+            />
+          </label>
+
           <button className="btn primary" onClick={run} disabled={busy}>
             {busy ? 'Running…' : 'Run backtest'}
           </button>
+        </div>
+
+        <div className="presets">
+          <span className="presets-label">Period</span>
+          {presets.map((p) => {
+            const active =
+              (p.period.start ?? '') === (period.start ?? '') &&
+              (p.period.end ?? '') === (period.end ?? '')
+            return (
+              <button
+                key={p.label}
+                className={`chip${active ? ' active' : ''}`}
+                onClick={() => applyPreset(p.period)}
+                disabled={busy}
+              >
+                {p.label}
+              </button>
+            )
+          })}
         </div>
         {info && <Note>{info.description}</Note>}
       </Panel>
@@ -139,8 +221,56 @@ export function Backtest({
       {error && <ErrorState error={error} onRetry={run} />}
       {busy && !result && <Loading what="the backtest" />}
 
-      {strat && bench && (
+      {strat && bench && verdict && (
         <>
+          <Insight
+            label="Verdict against buy-and-hold"
+            tone={verdict.tone}
+            headline={
+              verdict.wonReturn ? (
+                <>
+                  {info?.label} <Figure value="beat" tone="good" /> buy-and-hold —{' '}
+                  <Figure value={pct(verdict.sr)} /> against{' '}
+                  <Figure value={pct(verdict.br)} />, ending with{' '}
+                  <Figure value={pct(verdict.relative)} tone="good" /> more wealth
+                  than simply holding.
+                </>
+              ) : (
+                <>
+                  {info?.label} <Figure value="lost" tone="bad" /> to buy-and-hold on
+                  return — <Figure value={pct(verdict.sr)} /> against{' '}
+                  <Figure value={pct(verdict.br)} />, ending with just{' '}
+                  <Figure value={pct(1 + verdict.relative, 0)} tone="bad" /> of the
+                  wealth simply holding would have produced.
+                </>
+              )
+            }
+          >
+            {verdict.wonDrawdown ? (
+              <>
+                It cut the worst drawdown from <Figure value={pct(verdict.bd)} /> to{' '}
+                <Figure value={pct(verdict.sd)} tone="good" />, holding a position
+                only {pct(strat.stats.exposure, 0)} of the time
+                {/* Only frame this as a trade-off when it actually was one. On a
+                    falling market a trend filter can win on BOTH axes, and
+                    calling that "lower return for lower risk" is simply wrong. */}
+                {verdict.wonReturn
+                  ? ' — it won on both axes here, which is what a trend filter is supposed to do in a falling market.'
+                  : '. Lower return for lower risk is a different objective, not a worse one.'}
+              </>
+            ) : (
+              <>
+                And it did not compensate with a shallower drawdown either —{' '}
+                <Figure value={pct(verdict.sd)} tone="bad" /> against the
+                benchmark's <Figure value={pct(verdict.bd)} />. On this asset the
+                strategy is worse on both axes.
+              </>
+            )}{' '}
+            It paid {money(strat.stats.total_costs)} in commission and slippage
+            across {int(strat.stats.num_trades)} trades. Check the Research tab
+            before trusting any of these numbers.
+          </Insight>
+
           <Panel title="Strategy vs benchmark" subtitle="Both pay the same costs" wide>
             <div className="compare">
               <div>

@@ -1,31 +1,71 @@
 import { useEffect, useState } from 'react'
-import { api, type Asset, type StrategyInfo } from './api'
+import { api, type Asset, type SnapshotEntry, type StrategyInfo } from './api'
 import { ErrorState, Loading } from './components/Common'
 import { Backtest } from './views/Backtest'
+import { Compare } from './views/Compare'
 import { Correlation } from './views/Correlation'
 import { Overview } from './views/Overview'
 import { Research } from './views/Research'
 import { Risk } from './views/Risk'
 import './App.css'
 
-const TABS = ['Overview', 'Risk', 'Correlation', 'Backtest', 'Research'] as const
+const TABS = ['Overview', 'Risk', 'Correlation', 'Backtest', 'Compare', 'Research'] as const
 type Tab = (typeof TABS)[number]
 
 export default function App() {
   const [assets, setAssets] = useState<Asset[] | null>(null)
+  const [snapshot, setSnapshot] = useState<SnapshotEntry[]>([])
   const [strategies, setStrategies] = useState<StrategyInfo[]>([])
   const [asset, setAsset] = useState('NVDA')
   const [tab, setTab] = useState<Tab>('Overview')
   const [error, setError] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshNote, setRefreshNote] = useState<string | null>(null)
+  const [dataVersion, setDataVersion] = useState(0)
 
   const boot = () => {
     setError(null)
     Promise.all([api.assets(), api.strategies()])
       .then(([a, s]) => {
-        setAssets(a.assets)
-        setStrategies(s.strategies)
+        // Default to empty arrays rather than trusting the payload's shape. A
+        // stale backend serving an older schema should degrade to a missing
+        // freshness line, not a blank page with a console error.
+        setAssets(a.assets ?? [])
+        setSnapshot(a.snapshot ?? [])
+        setStrategies(s.strategies ?? [])
       })
       .catch((e) => setError(e.message))
+  }
+
+  /**
+   * The only action in the app that reaches the market-data provider.
+   * Bumping `dataVersion` remounts the active view so it refetches — otherwise
+   * the page would keep showing figures computed from the previous snapshot.
+   */
+  const refreshData = () => {
+    setRefreshing(true)
+    setRefreshNote(null)
+    api
+      .refreshData()
+      .then((r) => {
+        setSnapshot(r.snapshot ?? [])
+        setDataVersion((v) => v + 1)
+        // Say plainly what happened. "Already current" is a real outcome for
+        // daily data, not a failure, and hiding it would make the button feel
+        // broken when pressed twice.
+        const updated = r.updated?.length ?? 0
+        const skipped = r.skipped?.length ?? 0
+        const failed = r.failed?.length ?? 0
+        setRefreshNote(
+          failed
+            ? `Updated ${updated}, failed ${failed}: ${r.failed[0].error}`
+            : updated === 0 && skipped
+              ? `Already current — daily bars, fetched under a day ago.`
+              : `Updated ${updated} asset${updated === 1 ? '' : 's'} from the provider.`,
+        )
+      })
+      .catch((e) => setRefreshNote(`Refresh failed — ${e.message}`))
+      .finally(() => setRefreshing(false))
   }
 
   useEffect(boot, [])
@@ -35,6 +75,14 @@ export default function App() {
 
   // Correlation is inherently cross-asset, so the asset picker does not apply.
   const showAssetPicker = tab !== 'Correlation'
+
+  // Latest bar across the snapshot — how current the whole platform is.
+  const asOf = snapshot
+    .map((s) => s.end)
+    .filter((d): d is string => Boolean(d))
+    .sort()
+    .at(-1)
+  const totalRows = snapshot.reduce((n, s) => n + (s.rows ?? 0), 0)
 
   return (
     <div className="app">
@@ -71,16 +119,40 @@ export default function App() {
         ))}
       </nav>
 
+      <div className="databar">
+        <div className="databar-left">
+          <span className="dot" aria-hidden="true" />
+          <span>
+            Data as of <strong>{asOf ?? '—'}</strong>
+          </span>
+          <span className="databar-sep">·</span>
+          <span>{totalRows.toLocaleString()} bars from a committed snapshot</span>
+          <span
+            className="databar-hint"
+            title="Every calculation reads a snapshot committed to the repository, never a live request. That is what makes a backtest reproducible — and it means the platform works with no internet connection. Refresh to pull new prices from the provider."
+          >
+            why?
+          </span>
+        </div>
+        <div className="databar-right">
+          {refreshNote && <span className="databar-note">{refreshNote}</span>}
+          <button className="btn small" onClick={refreshData} disabled={refreshing}>
+            {refreshing ? 'Fetching…' : '↻ Refresh data'}
+          </button>
+        </div>
+      </div>
+
       <div className="disclaimer">
         <strong>Research tool, not investment advice.</strong> Every figure is computed
         from historical data. Backtested performance is not a prediction of future returns.
       </div>
 
-      <main className="grid">
+      <main className="grid" key={dataVersion}>
         {tab === 'Overview' && <Overview asset={asset} />}
         {tab === 'Risk' && <Risk asset={asset} />}
         {tab === 'Correlation' && <Correlation />}
         {tab === 'Backtest' && <Backtest asset={asset} strategies={strategies} />}
+        {tab === 'Compare' && <Compare asset={asset} strategies={strategies} />}
         {tab === 'Research' && <Research asset={asset} strategies={strategies} />}
       </main>
 

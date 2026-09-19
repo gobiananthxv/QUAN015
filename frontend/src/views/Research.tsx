@@ -13,6 +13,7 @@ import {
 } from 'recharts'
 import { api, DEFAULT_CONFIG, type Num, type Plateau, type RegimeRow, type StrategyInfo } from '../api'
 import { ErrorState, Loading, Note, Panel } from '../components/Common'
+import { Figure, Insight, type Tone } from '../components/Insight'
 import { num, pct, tipPct } from '../format'
 
 type Robustness = Awaited<ReturnType<typeof api.robustness>>
@@ -86,8 +87,76 @@ export function Research({ asset, strategies }: { asset: string; strategies: Str
   const trend = regime.filter((r) => r.axis === 'trend')
   const vol = regime.filter((r) => r.axis === 'volatility')
 
+  // The verdict string already encodes the judgement; map it to a tone.
+  const tone: Tone = p.verdict.startsWith('robust')
+    ? 'good'
+    : p.verdict.startsWith('moderate')
+      ? 'caution'
+      : 'bad'
+
+  const bull = trend.find((r) => r.regime === 'bull')
+  const bear = trend.find((r) => r.regime === 'bear')
+  const beatCount = rob.periods.filter((w) => Number(w.relative_return) > 0).length
+  const firstNegativeCost = rob.costs.find((c) => Number(c.total_return) < 0)
+
   return (
     <>
+      <Insight
+        label="Should you believe this backtest?"
+        tone={tone}
+        headline={
+          tone === 'good' ? (
+            <>
+              Robust. <Figure value={pct(p.share_positive, 0)} tone="good" /> of{' '}
+              {p.combinations} parameter combinations are profitable, and the
+              median Sharpe of <Figure value={num(p.median)} /> sits close to the
+              best cell's <Figure value={num(p.best)} />.
+            </>
+          ) : tone === 'caution' ? (
+            <>
+              Mixed. The result holds across much of the grid but is sensitive to
+              parameters — median Sharpe <Figure value={num(p.median)} /> against a
+              best of <Figure value={num(p.best)} />.
+            </>
+          ) : (
+            <>
+              <Figure value="Treat with suspicion." tone="bad" /> The result is
+              concentrated in a few cells: median Sharpe{' '}
+              <Figure value={num(p.median)} tone="bad" /> against a best of{' '}
+              <Figure value={num(p.best)} />, with only{' '}
+              <Figure value={pct(p.share_positive, 0)} /> of combinations
+              profitable.
+            </>
+          )
+        }
+      >
+        {tone === 'good'
+          ? 'A flat surface means the parameter choice barely matters, so the result is not an artefact of tuning.'
+          : 'A single bright cell surrounded by poor ones is what over-fitting looks like. Pick a different strategy, or accept that this one was lucky on this history.'}{' '}
+        {beatCount * 2 < rob.periods.length ? (
+          <>
+            But a stable surface is not the same as a reliable edge: split into{' '}
+            {rob.periods.length} independent windows, it beat buy-and-hold in only{' '}
+            <Figure value={`${beatCount}`} tone="bad" /> of them
+          </>
+        ) : (
+          <>
+            It also holds up over time, beating buy-and-hold in{' '}
+            <Figure value={`${beatCount} of ${rob.periods.length}`} tone="good" />{' '}
+            independent windows
+          </>
+        )}
+        {firstNegativeCost ? (
+          <>
+            , and it turns unprofitable once costs reach{' '}
+            <Figure value={`${Number(firstNegativeCost.bps_per_side)} bps`} tone="bad" />{' '}
+            per side.
+          </>
+        ) : (
+          ', and it stays profitable at every cost level tested.'
+        )}
+      </Insight>
+
       <Panel title="Parameter surface" subtitle={`Sharpe across ${p.combinations} parameter combinations`} wide>
         {selector}
         <table className="heatmap">
@@ -192,11 +261,25 @@ export function Research({ asset, strategies }: { asset: string; strategies: Str
             </tbody>
           </table>
         </div>
-        <Note>
-          <strong>Exposure</strong> is usually the revealing column. A trend
-          strategy's value typically shows up as being barely invested during bear
-          regimes rather than as a higher return anywhere.
-        </Note>
+        {bull && bear && (
+          <Insight
+            label="Where the strategy earns its keep"
+            tone={Number(bear.exposure) < Number(bull.exposure) ? 'good' : 'caution'}
+            headline={
+              <>
+                It held a position <Figure value={pct(bear.exposure, 0)} /> of the
+                time in bear regimes against{' '}
+                <Figure value={pct(bull.exposure, 0)} /> in bull regimes — losing{' '}
+                <Figure value={pct(bear.strategy_return)} /> where the benchmark
+                lost <Figure value={pct(bear.benchmark_return)} tone="bad" />.
+              </>
+            }
+          >
+            <strong>Exposure</strong> is the revealing column, not return. A trend
+            strategy's value shows up as being absent when the market falls, which
+            is exactly what it is for — now measured rather than asserted.
+          </Insight>
+        )}
       </Panel>
     </>
   )

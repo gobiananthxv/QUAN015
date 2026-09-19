@@ -20,6 +20,24 @@ export interface Asset {
   ann_factor: number
 }
 
+export interface SnapshotEntry {
+  asset: string
+  name: string
+  ticker: string
+  available: boolean
+  rows?: number
+  start?: string
+  end?: string
+}
+
+export interface RefreshResult {
+  updated: { asset: string; rows: number; start: string; end: string }[]
+  /** Assets fetched within the last day — daily bars cannot have changed. */
+  skipped: { asset: string; age_hours: number; reason: string }[]
+  failed: { asset: string; error: string }[]
+  snapshot: SnapshotEntry[]
+}
+
 export interface StrategyInfo {
   name: string
   label: string
@@ -116,6 +134,12 @@ export const DEFAULT_CONFIG: BacktestConfig = {
   allow_short: false,
 }
 
+/** Backtest window. Omitting both ends means the full history. */
+export interface Period {
+  start?: string
+  end?: string
+}
+
 export interface Plateau {
   metric: string
   combinations: number
@@ -186,7 +210,11 @@ const post = <T>(path: string, body: unknown) =>
 export const api = {
   health: () => request<{ status: string; disclaimer: string }>('/health'),
 
-  assets: () => request<{ assets: Asset[]; cache: unknown[] }>('/api/assets'),
+  assets: () => request<{ assets: Asset[]; snapshot: SnapshotEntry[] }>('/api/assets'),
+
+  /** The only call that reaches the market-data provider. */
+  refreshData: (assets: string[] = [], force = false) =>
+    post<RefreshResult>('/api/data/refresh', { assets, force }),
 
   strategies: () => request<{ strategies: StrategyInfo[] }>('/api/strategies'),
 
@@ -222,19 +250,26 @@ export const api = {
       `/api/regime?asset=${asset}`,
     ),
 
-  backtest: (asset: string, strategy: string, params: Record<string, number>, config: BacktestConfig) =>
-    post<{ strategy: RunResult; benchmark: RunResult }>('/api/backtest', {
+  backtest: (
+    asset: string,
+    strategy: string,
+    params: Record<string, number>,
+    config: BacktestConfig,
+    period: Period = {},
+  ) =>
+    post<{ strategy: RunResult; benchmark: RunResult; period: Period }>('/api/backtest', {
       asset,
       strategy,
       params,
       config,
+      ...period,
     }),
 
-  compare: (asset: string, config: BacktestConfig) =>
-    post<{ asset: string; runs: RunResult[]; benchmark: RunResult }>('/api/backtest/compare', {
-      asset,
-      config,
-    }),
+  compare: (asset: string, config: BacktestConfig, period: Period = {}) =>
+    post<{ asset: string; runs: RunResult[]; benchmark: RunResult; period: Period }>(
+      '/api/backtest/compare',
+      { asset, config, ...period },
+    ),
 
   robustness: (asset: string, strategy: string, config: BacktestConfig) =>
     post<{

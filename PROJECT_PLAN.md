@@ -61,7 +61,7 @@ following were cut. Each cut is a considered trade-off, not an oversight.
 | Cut | Replaced with | Why |
 |---|---|---|
 | 5 microservices (ports 8000–8003) | One FastAPI process, service boundaries as Python modules | Same separation of concerns, no orchestration cost |
-| PostgreSQL + SQLAlchemy + Alembic | CSV files in `backend/data_cache/` | ~2.5k rows per asset; read cost is milliseconds |
+| PostgreSQL + SQLAlchemy + Alembic | CSV files in `backend/data_snapshot/` | ~2.5k rows per asset; read cost is milliseconds |
 | Redis + Celery workers | `functools.lru_cache` | Backtests run in ~10 ms; a cache server adds latency and a process |
 | Docker / Kubernetes / CI-CD | `run` scripts | Nothing is deployed to a cluster at a demo table |
 | Prometheus / Grafana / ELK | stdout logging | No production traffic to observe |
@@ -91,7 +91,7 @@ following were cut. Each cut is a considered trade-off, not an oversight.
 └───────────────────────────┬──────────────────────────────┘
                             │
               ┌─────────────┴──────────────┐
-              │  data_cache/*.csv          │
+              │  data_snapshot/*.csv       │
               │  (committed to the repo)   │
               └─────────────┬──────────────┘
                             │ cold cache only
@@ -334,6 +334,46 @@ punishes the result arbitrarily. Open trades are marked to market, included in
 equity, and counted separately as `num_open_trades`, so `num_trades` means
 *completed round trips*. Buy-and-hold therefore reports 0 trades and 1 open
 position, which is literally what it does.
+
+**D24 — Refresh reasons in days, because the data is daily (post-Phase 7).**
+The provider publishes one bar per day, so re-downloading more often cannot
+produce a different result — it spends a network round trip rewriting identical
+rows. An asset fetched within 24 hours is skipped and *reported as skipped*
+rather than folded into successes, so pressing Refresh twice says "already
+current" instead of pretending to have worked. `force` overrides, which is what
+you want after a provider outage or a bad partial write.
+
+**D25 — A sub-period regenerates its signals rather than slicing a full run (post-Phase 7).**
+The problem statement lists "backtesting periods" alongside parameters and costs
+as something the user must be able to vary. Slicing a full-history signal series
+would let indicator values at the window's start carry information from before
+it — fine for a chart, wrong for an out-of-sample test. `window()` slices the
+price frame *first*, so warm-up happens inside the window. The benchmark is
+restricted to the same range; comparing a windowed strategy against a
+full-history benchmark would silently compare two different periods.
+
+**D26 — The run scripts refuse to start on an occupied port (post-Phase 7).**
+Twice during development uvicorn failed to bind, exited quietly, and left an
+older process serving stale code while both URLs still returned 200 — so edits
+appeared to do nothing. The scripts now probe both IPv4 and IPv6 (uvicorn binds
+the former, Vite the latter) and fail with an explicit message and a suggested
+alternative port.
+
+**D22 — `data_cache/` renamed `data_snapshot/`, because it was never a cache (Phase 7).**
+A cache implies a TTL, expiry and invalidation. This has none: it never expires
+and never re-checks. Calling it a cache invited the reasonable question "so is
+the app not actually fetching data?" — the honest answer being that it reads
+committed CSVs and only fetches on an explicit refresh. The directory, the
+config constant (`SNAPSHOT_DIR`) and the docs now say what it is.
+
+**D23 — Exactly one endpoint may touch the network (Phase 7).**
+`POST /api/data/refresh` re-downloads and overwrites the snapshot. Every other
+endpoint is satisfiable from disk, and a test proves it: it replaces the fetcher
+with a function that raises, then exercises every read endpoint plus a backtest.
+Refresh collects failures per asset rather than aborting, returns 502 only if
+*every* asset failed, and a further test confirms a failed refresh leaves the
+previous snapshot fully usable — a provider outage must not take the platform
+down with it.
 
 **D20 — Non-finite numbers cross the wire as `null`, never as a sentinel (Phase 6).**
 `inf` (Sortino with no losing day, profit factor with no losing trade) and `NaN`

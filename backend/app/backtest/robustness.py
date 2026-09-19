@@ -43,16 +43,37 @@ SWEEP_METRICS = (
 )
 
 
+def window(df: pd.DataFrame, start: str | None = None, end: str | None = None) -> pd.DataFrame:
+    """Slice a price frame to a date range.
+
+    Signals are always generated *from the sliced frame*, never sliced after the
+    fact. Generating on the full history and then trimming would let indicator
+    values at the start of the window carry information from before it — which
+    is fine for a chart but wrong for an out-of-sample test, and this is exactly
+    the control the problem statement means by "backtesting periods".
+    """
+    out = df.loc[start:end]
+    if out.empty:
+        raise ValueError(
+            f"no bars between {start or 'start'} and {end or 'end'}"
+        )
+    return out
+
+
 def run_strategy(
     asset: str,
     strategy_name: str,
     params: dict | None = None,
     config: BacktestConfig | None = None,
     df: pd.DataFrame | None = None,
+    start: str | None = None,
+    end: str | None = None,
 ) -> BacktestResult:
     """Backtest one strategy on one asset. The single entry point everything else uses."""
     asset = get_asset(asset).key
     frame = load_asset(asset) if df is None else df
+    if start or end:
+        frame = window(frame, start, end)
     strat = get_strategy(strategy_name, params)
     signals = strat.generate_signals(frame)
     return run_backtest(

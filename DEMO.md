@@ -3,8 +3,8 @@
 Three minutes, five views, one argument. Written to be read aloud.
 
 **Before you start:** run `./run.sh` (or `.\run.ps1`), wait for both servers, open
-`http://localhost:5173`, and leave the asset on **NVDA**. The market-data cache is
-committed, so none of this needs the venue wifi.
+`http://localhost:5173`, and leave the asset on **NVDA**. The market-data snapshot
+is committed, so none of this needs the venue wifi.
 
 ---
 
@@ -144,11 +144,11 @@ Point at period stability.
 
 ## 2:50 — Close (15s)
 
-> "262 tests, **fourteen of them causality tests** — nine indicators, four
+> "270 tests, **fourteen of them causality tests** — nine indicators, four
 > strategies and the regime labels, each computed on a truncated series and on
 > the full one, asserting the overlap is identical. If appending future data
 > changed a past value, the thing leaks the future. Look-ahead bias ruled out
-> structurally, not promised. Six dependencies, no database, no Docker. Runs
+> structurally, not promised. Seven dependencies, no database, no Docker. Runs
 > offline."
 
 > "It's a research tool. It won't tell you what to buy. It'll tell you whether
@@ -183,7 +183,7 @@ looking at a single return figure.
 **"Why not yfinance / Postgres / Docker?"**
 We call the Yahoo chart API directly with `requests` — fewer dependencies, no
 wrapper-version churn, and failures raise loudly instead of silently caching an
-empty frame. ~2,500 rows per asset doesn't need a database. Six packages total.
+empty frame. ~2,500 rows per asset doesn't need a database. Seven packages total.
 
 **"Can it handle more assets or strategies?"**
 Add one entry to `ASSETS` in `config.py`. A strategy is a subclass with one

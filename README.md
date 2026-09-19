@@ -23,6 +23,7 @@ every result for the four ways backtests normally lie.
 | [Quick start](#quick-start) | Get it running in one command |
 | [What you get](#what-you-get) | The five views and what each answers |
 | [How it works](#how-it-works) | The pipeline, stage by stage |
+| [Where the data comes from](#where-the-data-comes-from) | Why it reads a snapshot, not a live feed |
 | [What the platform found](#what-the-platform-found) | Real results, including the unflattering ones |
 | [Why you can trust the numbers](#why-you-can-trust-the-numbers) | Bias controls and the decisions behind them |
 | [Project layout](#project-layout) | Where everything lives |
@@ -31,7 +32,7 @@ every result for the four ways backtests normally lie.
 | [DEMO.md](DEMO.md) | A scripted three-minute walkthrough |
 | [PROJECT_PLAN.md](PROJECT_PLAN.md) | Phase plan and full decision log |
 
-**Status:** all seven phases complete · **262 tests passing** · all 19
+**Status:** all seven phases complete · **281 tests passing** · all 19
 problem-statement requirements delivered.
 
 ---
@@ -41,7 +42,7 @@ problem-statement requirements delivered.
 **Requirements:** Python 3.11+ and Node 18+. No database, no Redis, no Docker.
 
 Ten years of market data is committed to the repository, so nothing below needs
-an internet connection.
+an internet connection. See [Where the data comes from](#where-the-data-comes-from).
 
 ### One command
 
@@ -153,7 +154,8 @@ cd backend && .venv/bin/python scripts/robustness_report.py
 
 #### Refresh the market data
 
-Re-fetches from Yahoo and overwrites the committed cache:
+Re-fetches from Yahoo and overwrites the committed snapshot. The dashboard's
+**↻ Refresh data** button and `POST /api/data/refresh` do the same thing.
 
 ```bash
 cd backend && .venv/bin/python scripts/bootstrap_data.py --refresh
@@ -165,7 +167,7 @@ cd backend && .venv/bin/python scripts/bootstrap_data.py --refresh
 
 ## What you get
 
-Five views. Each answers one question.
+Six views. Each answers one question.
 
 ### 1 · Overview — *what has this asset done?*
 
@@ -192,12 +194,21 @@ pair swings from −0.47 to +0.62 over a decade.
 ### 4 · Backtest — *what would this strategy have done?*
 
 Pick a strategy, edit its parameters, set your capital, commission and slippage,
-and run. You get the equity curve against buy-and-hold, a full metric
+**and choose the period** — presets for the last 1/3/5 years, the Covid era or
+the 2022 bear market, or any custom date range. Signals are regenerated inside
+the window, so a sub-period is a genuine out-of-sample run rather than a trimmed
+full-history one, and the benchmark is restricted to the same window. You get the equity curve against buy-and-hold, a full metric
 comparison, and a complete trade log — entry, exit, size, gross P&L, costs, net.
 
 Both the strategy and the benchmark pay the same costs.
 
-### 5 · Research — *should I believe any of this?*
+### 5 · Compare — *which strategy is best on this asset?*
+
+All four strategies and the benchmark on one chart, switchable between equity
+curve and drawdown, with a ranked table underneath. Every run shares the same
+capital, costs and window, so the comparison is like-for-like.
+
+### 6 · Research — *should I believe any of this?*
 
 The part most backtesting tools skip:
 
@@ -207,6 +218,30 @@ The part most backtesting tools skip:
 - **Period stability** — five consecutive windows, signals regenerated in each
 - **Regime attribution** — where the strategy beats the benchmark, and at what
   exposure
+
+---
+
+## Where the data comes from
+
+**The platform reads a committed snapshot, not a live request.** Loading an
+asset opens a CSV in `backend/data_snapshot/` — it does not contact Yahoo. The
+network is touched in exactly two situations: the file is missing, or someone
+explicitly asks for a refresh.
+
+That is a deliberate trade, and the reasons are in priority order:
+
+| Why | Detail |
+|:--|:--|
+| **Reproducibility** | A backtest must give the same answer today and next week. If the underlying prices moved between runs, every reported figure would drift and the tests asserting exact values would fail daily. |
+| **Availability** | The platform works with no internet connection at all. |
+| **Speed** | ~14 ms from disk against ~500 ms over the network — and the Research tab runs dozens of backtests per click. |
+| **Test integrity** | 281 tests run offline in 9 seconds instead of hammering a provider. |
+
+It is a *snapshot*, not a cache: there is no TTL, nothing expires, and nothing
+refreshes on a timer. To move the baseline forward, either press **↻ Refresh
+data** in the dashboard or call `POST /api/data/refresh`; the CLI equivalent is
+`scripts/bootstrap_data.py --refresh`. The dashboard always shows the snapshot's
+date in the bar under the tabs, so you can see how current it is.
 
 ---
 
@@ -441,7 +476,7 @@ The full reasoning for all 21 decisions is in
 
 ### Testing
 
-**262 tests.** Values are hand-computed against known answers, not snapshotted
+**281 tests.** Values are hand-computed against known answers, not snapshotted
 from the implementation — a snapshot test locks in whatever bug exists.
 
 | Suite | Tests | Covers |
@@ -452,7 +487,7 @@ from the implementation — a snapshot test locks in whatever bug exists.
 | `test_engine.py` | 33 | Look-ahead, cost arithmetic to the cent, equity curve vs trade log agreement |
 | `test_strategies.py` | 51 | Known-answer price paths, parameter validation, strategy causality |
 | `test_robustness.py` | 35 | Plateau detection against constructed surfaces with known answers |
-| `test_api.py` | 53 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
+| `test_api.py` | 72 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
 
 ---
 
@@ -479,15 +514,15 @@ backend/
       routes.py            REST endpoints
       serialise.py         inf/NaN -> null, numpy -> native
     main.py                FastAPI app, CORS, /health
-  tests/                   262 tests
+  tests/                   281 tests
   scripts/                 One runnable gate per phase
-  data_cache/              Committed CSV market data
+  data_snapshot/           Committed CSV market data
 frontend/
   src/
     api.ts                 Typed client; every numeric field is `number | null`
     format.ts              Display formatting; null renders as an em dash
     App.tsx                Shell, tabs, asset picker, disclaimer
-    views/                 Overview · Risk · Correlation · Backtest · Research
+    views/                 Overview · Risk · Correlation · Backtest · Compare · Research
 run.sh · run.ps1           Start API + dashboard
 verify.sh                  Run every phase gate
 DEMO.md                    Scripted three-minute walkthrough
@@ -551,7 +586,7 @@ Interactive docs at `http://localhost:8000/docs`.
 | Method | Path | Returns |
 |:--|:--|:--|
 | `GET` | `/health` | Liveness, asset list, disclaimer |
-| `GET` | `/api/assets` | Asset registry and cache status |
+| `GET` | `/api/assets` | Asset registry and snapshot state |
 | `GET` | `/api/strategies` | Strategy catalogue with defaults |
 | `GET` | `/api/ohlcv?asset=` | Validated bars + quality report |
 | `GET` | `/api/indicators?asset=` | All indicators, configurable periods |
@@ -561,8 +596,9 @@ Interactive docs at `http://localhost:8000/docs`.
 | `GET` | `/api/regime?asset=` | Regime labels over time |
 | `GET` | `/api/panel` | Aligned multi-asset close panel |
 | `GET` | `/api/backtest/regime-attribution` | Strategy vs benchmark by regime |
-| `POST` | `/api/backtest` | One strategy + benchmark + trade log |
-| `POST` | `/api/backtest/compare` | Every strategy against one benchmark |
+| `POST` | `/api/data/refresh` | **The only endpoint that touches the network.** Re-downloads the snapshot; skips assets fetched within the last day unless `force` |
+| `POST` | `/api/backtest` | One strategy + benchmark + trade log; optional `start`/`end` |
+| `POST` | `/api/backtest/compare` | Every strategy against one benchmark; optional `start`/`end` |
 | `POST` | `/api/backtest/robustness` | Surface, plateau verdict, cost + period sweeps |
 
 ### Dependencies
@@ -601,6 +637,8 @@ Reported rather than silently smoothed.
 | Research tab spins for a second | Expected — it runs ~25 backtests plus cost and period sweeps | Wait ~2s |
 | `./run.sh: Permission denied` | Not executable | `chmod +x run.sh verify.sh` |
 | `python3: command not found` on Windows | Use the PowerShell script | `.\run.ps1` |
+| `port 8000 is already in use` | An earlier run is still alive | Stop it, or `API_PORT=8001 UI_PORT=5174 ./run.sh`. The scripts refuse to start rather than leave a stale server answering with old code. |
+| Refresh says "already current" | Bars are daily, so a second fetch inside 24h would rewrite identical rows | Expected. `POST /api/data/refresh` with `{"force": true}` to override. |
 | Want to check everything still works | — | `./verify.sh` |
 
 ### Out of scope

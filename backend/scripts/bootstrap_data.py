@@ -4,7 +4,7 @@ Run once with network access:
 
     .venv/Scripts/python.exe scripts/bootstrap_data.py
 
-The resulting parquet files in ``data_cache/`` are committed to the repo so the
+The resulting CSV files in ``data_snapshot/`` are committed to the repo so the
 platform (and the demo) works offline.
 """
 from __future__ import annotations

@@ -64,6 +64,48 @@ if [ ! -d frontend/node_modules ]; then
   npm install --prefix frontend || { echo "error: npm install failed." >&2; exit 1; }
 fi
 
+# Refuse to start on an occupied port.
+#
+# Without this, uvicorn fails to bind, exits quietly, and whatever was already
+# listening keeps serving — so you edit the backend, restart, and the browser
+# still talks to the old process. That failure mode wastes a long time because
+# everything *looks* fine: both URLs return 200.
+port_in_use() {
+  if command -v python > /dev/null 2>&1 || command -v python3 > /dev/null 2>&1; then
+    "$PY" - "$1" <<'PYCHECK'
+import socket, sys
+
+# Probe both stacks: uvicorn listens on IPv4 here while Vite binds IPv6 only,
+# so checking one address would miss the other.
+port = int(sys.argv[1])
+for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+    try:
+        s = socket.socket(family, socket.SOCK_STREAM)
+        s.settimeout(0.4)
+        if s.connect_ex((host, port)) == 0:
+            sys.exit(1)          # something is listening
+    except OSError:
+        pass                      # family unavailable; try the next
+    finally:
+        s.close()
+sys.exit(0)                       # port is free
+PYCHECK
+    return $?
+  fi
+  return 0
+}
+
+for check in "$API_PORT:API" "$UI_PORT:dashboard"; do
+  p="${check%%:*}"; what="${check##*:}"
+  if ! port_in_use "$p"; then
+    echo "error: port $p is already in use, so the $what cannot start." >&2
+    echo "       Something is already listening there — probably an earlier run." >&2
+    echo "       Stop it first, or choose another port:" >&2
+    echo "         API_PORT=8001 UI_PORT=5174 ./run.sh" >&2
+    exit 1
+  fi
+done
+
 # Absolute path: the API is launched from inside backend/.
 PY_ABS="$PWD/$PY"
 

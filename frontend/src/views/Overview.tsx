@@ -13,7 +13,8 @@ import {
 } from 'recharts'
 import { api, type Bar as OhlcBar } from '../api'
 import { ErrorState, Loading, Note, Panel } from '../components/Common'
-import { num, tipNum, tipVolume } from '../format'
+import { Figure, Insight } from '../components/Insight'
+import { num, pct, tipNum, tipVolume } from '../format'
 
 /** Price, moving averages, volume and buy/sell markers for one asset. */
 export function Overview({ asset }: { asset: string }) {
@@ -68,8 +69,39 @@ export function Overview({ asset }: { asset: string }) {
   const last = rows[rows.length - 1]
   const first = data[0]
 
+  // Computed, so it stays true when the asset changes or the data is refreshed.
+  //
+  // Growth is measured over the FULL series, not the charted window. The chart
+  // starts where the 200-day average becomes defined, which is ~200 bars in —
+  // measuring from there would report 63x for NVDA while the Risk tab reports
+  // 142x for the same asset, and the two would read as a contradiction.
+  const firstClose = Number(rows[0]?.close ?? 0)
+  const lastClose = Number(last?.close ?? 0)
+  const growth = firstClose > 0 ? lastClose / firstClose : 0
+  const inMarketShare = data.length
+    ? data.filter((d) => d.inMarket === 1).length / data.length
+    : 0
+  const years = rows.length / 252
+
   return (
     <>
+      <Insight
+        label="What this shows"
+        tone="neutral"
+        headline={
+          <>
+            {asset} multiplied <Figure value={`${growth.toFixed(1)}×`} /> over{' '}
+            {years.toFixed(0)} years, while a 50/200 crossover would have been
+            invested only <Figure value={pct(inMarketShare, 0)} /> of the charted
+            period.
+          </>
+        }
+      >
+        The green bands are the invested periods. Time out of the market is the
+        price a trend filter charges for avoiding the crashes — the Backtest tab
+        settles whether that trade was worth making.
+      </Insight>
+
       <Panel
         title={`${asset} — price and trend`}
         subtitle={`${data.length.toLocaleString()} bars · ${first?.date} → ${last.date}`}

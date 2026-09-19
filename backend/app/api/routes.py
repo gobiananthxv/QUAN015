@@ -1,12 +1,15 @@
 """REST API.
 
-Ten endpoints, no more. Every response passes through ``serialise.clean`` so
-``inf`` and ``nan`` leave as ``null`` rather than as tokens ``JSON.parse``
-rejects.
+Fourteen endpoints here, plus ``/health`` on the app itself. Every response passes through ``serialise.clean`` so ``inf``
+and ``nan`` leave as ``null`` rather than as tokens ``JSON.parse`` rejects.
 
 Read endpoints are GETs with query parameters. Backtests are POSTs because they
-carry a nested configuration object, not because they mutate anything — nothing
-in this API has side effects beyond populating the on-disk cache.
+carry a nested configuration object, not because they mutate anything.
+
+Exactly one endpoint has side effects and exactly one touches the network:
+``POST /data/refresh``, which re-downloads market data and overwrites the
+committed snapshot. Everything else reads that snapshot from disk, which is what
+keeps a backtest reproducible between runs.
 """
 from __future__ import annotations
 
@@ -31,10 +34,11 @@ from ..backtest.robustness import (
     regime_attribution,
     run_strategy,
     sharpe_surface,
+    window,
 )
 from ..backtest.strategies import REGISTRY, list_strategies
 from ..config import ASSETS, get_asset
-from ..data.store import cache_status, load_asset, load_panel, quality_report
+from ..data.store import load_asset, load_panel, quality_report, refresh, snapshot_status
 from .serialise import clean, frame_to_records, series_to_pairs
 
 router = APIRouter()
@@ -61,12 +65,29 @@ class BacktestIn(BaseModel):
     strategy: str
     params: dict = Field(default_factory=dict)
     config: ConfigIn = Field(default_factory=ConfigIn)
+    # ISO dates. Omitted means the full history. Signals are regenerated inside
+    # the window, so a sub-period is a genuine out-of-sample run.
+    start: str | None = None
+    end: str | None = None
 
 
 class CompareIn(BaseModel):
     asset: str
     strategies: list[str] = Field(default_factory=lambda: list(REGISTRY))
     config: ConfigIn = Field(default_factory=ConfigIn)
+    start: str | None = None
+    end: str | None = None
+
+
+class RefreshIn(BaseModel):
+    """Which assets to re-download. Empty means all of them.
+
+    ``force`` re-downloads even if the snapshot is less than a day old. The data
+    is daily, so the default skips that as a wasted round trip.
+    """
+
+    assets: list[str] = Field(default_factory=list)
+    force: bool = False
 
 
 class RobustnessIn(BaseModel):
@@ -97,7 +118,7 @@ def _strategy_or_404(name: str) -> str:
 
 @router.get("/assets")
 def get_assets() -> dict:
-    """Asset registry plus what is currently cached."""
+    """Asset registry plus the state of the committed data snapshot."""
     return clean(
         {
             "assets": [
@@ -110,9 +131,35 @@ def get_assets() -> dict:
                 }
                 for a in ASSETS.values()
             ],
-            "cache": cache_status(),
+            "snapshot": snapshot_status(),
         }
     )
+
+
+@router.post("/data/refresh")
+def post_refresh(body: RefreshIn | None = None) -> dict:
+    """Re-download market data from the provider and overwrite the snapshot.
+
+    The one endpoint that reaches the network. Everything else reads the
+    committed snapshot, so results stay reproducible between runs; this is how
+    you deliberately move that baseline forward.
+
+    Market data here is daily, so an asset fetched within the last 24 hours is
+    skipped rather than re-downloaded — a second fetch would rewrite identical
+    rows. Pass ``force`` to override.
+
+    Returns 502 only if *every* requested asset failed — a partial success, or a
+    run where everything was simply already current, still returns 200 with the
+    detail listed, so the caller can see exactly what happened rather than being
+    told the whole thing broke.
+    """
+    keys = [_asset_or_404(k) for k in (body.assets if body else [])]
+    result = refresh(keys or None, force=bool(body and body.force))
+    if result["failed"] and not result["updated"] and not result["skipped"]:
+        raise HTTPException(
+            502, f"provider unreachable: {result['failed'][0]['error']}"
+        )
+    return clean(result)
 
 
 @router.get("/strategies")
@@ -256,14 +303,19 @@ def post_backtest(body: BacktestIn) -> dict:
     _strategy_or_404(body.strategy)
     cfg = body.config.to_config()
     try:
-        res = run_strategy(key, body.strategy, body.params, cfg)
+        res = run_strategy(key, body.strategy, body.params, cfg, start=body.start, end=body.end)
+        # The benchmark must cover the same window, or the comparison is
+        # between two different periods and means nothing.
+        bench_frame = window(load_asset(key), body.start, body.end)
     except ValueError as exc:
-        raise HTTPException(422, f"Invalid parameters: {exc}") from None
-    bench = buy_and_hold(load_asset(key), key, config=cfg)
+        raise HTTPException(422, str(exc)) from None
+
+    bench = buy_and_hold(bench_frame, key, config=cfg)
     return clean(
         {
             "strategy": _result_payload(res),
             "benchmark": _result_payload(bench, include_trades=False),
+            "period": {"start": body.start, "end": body.end},
         }
     )
 
@@ -277,16 +329,22 @@ def post_compare(body: CompareIn) -> dict:
     cfg = body.config.to_config()
 
     runs = []
-    for name in body.strategies:
-        try:
-            res = run_strategy(key, name, None, cfg)
-        except ValueError as exc:
-            raise HTTPException(422, f"{name}: {exc}") from None
-        runs.append(_result_payload(res, include_trades=False))
+    try:
+        for name in body.strategies:
+            res = run_strategy(key, name, None, cfg, start=body.start, end=body.end)
+            runs.append(_result_payload(res, include_trades=False))
+        bench_frame = window(load_asset(key), body.start, body.end)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
 
-    bench = buy_and_hold(load_asset(key), key, config=cfg)
+    bench = buy_and_hold(bench_frame, key, config=cfg)
     return clean(
-        {"asset": key, "runs": runs, "benchmark": _result_payload(bench, include_trades=False)}
+        {
+            "asset": key,
+            "runs": runs,
+            "benchmark": _result_payload(bench, include_trades=False),
+            "period": {"start": body.start, "end": body.end},
+        }
     )
 
 

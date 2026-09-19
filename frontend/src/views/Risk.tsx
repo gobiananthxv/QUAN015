@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 import { api, type Summary } from '../api'
 import { ErrorState, Loading, Note, Panel, Stat } from '../components/Common'
+import { Figure, Insight } from '../components/Insight'
 import { int, num, pct, tipPct } from '../format'
 
 type Point = { date: string; value: number | null }
@@ -49,6 +50,11 @@ export function Risk({ asset }: { asset: string }) {
   if (!data) return <Loading what="risk metrics" />
 
   const s = data.summary
+  // "How far did it fall, and how long were you underwater?" is the question a
+  // return figure never answers.
+  const dd = s.max_drawdown ?? 0
+  const recovery = (1 / (1 + dd) - 1)
+  const ddDays = s.max_drawdown_duration ?? 0
   const axis = { tick: { fontSize: 11 }, stroke: '#64748b' }
   const tooltip = {
     contentStyle: { background: '#0f172a', border: '1px solid #334155', fontSize: 12 },
@@ -56,6 +62,22 @@ export function Risk({ asset }: { asset: string }) {
 
   return (
     <>
+      <Insight
+        label="The number behind the return"
+        tone={dd < -0.5 ? 'bad' : dd < -0.3 ? 'caution' : 'neutral'}
+        headline={
+          <>
+            Holding {asset} meant surviving a <Figure value={pct(dd)} tone="bad" />{' '}
+            drawdown lasting <Figure value={`${int(ddDays)} days`} />, and needing
+            a <Figure value={pct(recovery)} /> gain just to get back to even.
+          </>
+        }
+      >
+        Compounding is not symmetric: a 50% loss requires a 100% gain to recover.
+        A CAGR of {pct(s.cagr)} is only achievable by someone who did not sell
+        during that stretch.
+      </Insight>
+
       <Panel
         title={`${asset} — buy and hold`}
         subtitle={`Annualised using ${data.annFactor} periods per year`}
