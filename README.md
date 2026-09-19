@@ -35,10 +35,10 @@ against a buy-and-hold benchmark with realistic execution costs.
 | 3 | Backtesting engine | ✅ Complete |
 | 4 | Strategies | ✅ Complete |
 | 5 | Regime attribution + robustness | ✅ Complete |
-| 6 | REST API + dashboard | ⬜ Pending |
+| 6 | REST API + dashboard | ✅ Complete |
 | 7 | Hardening + demo | ⬜ Pending |
 
-**209 tests passing.** Full phase breakdown and decision log in
+**262 tests passing.** Full phase breakdown and decision log in
 [`PROJECT_PLAN.md`](PROJECT_PLAN.md).
 
 ---
@@ -86,12 +86,26 @@ and a full trade log. The benchmark runs through the **same** engine with the
 | **7c Period sweep** | `period_sweep(asset, strategy, n_windows)` | Is this an edge, or one good episode? |
 | **7d Regime attribution** | `regime_attribution(asset, strategy)` | *Where* does it beat the benchmark — and at what exposure? |
 
-### Stages 8–9 · Not yet built
+### Stages 8–9 · API and dashboard
 
-| # | Stage | Planned entry point |
-|:--|:--|:--|
-| 8 | **Serve** | FastAPI: `/ohlcv` `/indicators` `/metrics` `/correlation` `/backtest` `/regime` `/robustness` |
-| 9 | **Visualise** | React + Vite + TypeScript — Overview, Risk, Correlation, Backtest, Research |
+| # | Stage | Entry point | What happens |
+|:--|:--|:--|:--|
+| 8 | **Serve** | `uvicorn app.main:app` | Eleven endpoints. Every response passes through `serialise.clean`, so `inf` and `NaN` leave as `null`. |
+| 9 | **Visualise** | `npm run dev --prefix frontend` | React + Vite + TypeScript, five views, Recharts. |
+
+**Endpoints** — `GET /health` `/api/assets` `/api/strategies` `/api/ohlcv`
+`/api/indicators` `/api/metrics` `/api/correlation` `/api/rolling-correlation`
+`/api/regime` `/api/panel` `/api/backtest/regime-attribution`, and
+`POST /api/backtest` `/api/backtest/compare` `/api/backtest/robustness`.
+Interactive docs at `http://localhost:8000/docs`.
+
+**Views** — **Overview** (log-scale price, SMA 50/200, volume, shaded in-market
+bands) · **Risk** (metric tiles, cumulative return, underwater drawdown, rolling
+volatility) · **Correlation** (matrix heatmap, rolling correlation with a
+selectable window) · **Backtest** (live parameter and cost controls, equity curve
+vs benchmark, full trade log) · **Research** (Sharpe surface heatmap with the
+best cell marked, plateau verdict, cost decay, period stability, regime
+attribution).
 
 ### The one contract everything depends on
 
@@ -169,6 +183,28 @@ cd backend && .venv/bin/python scripts/strategy_report.py
 ```bash
 cd backend && .venv/bin/python scripts/robustness_report.py
 ```
+
+### Run the platform
+
+Two processes. Start the API first:
+
+```bash
+cd backend && .venv/bin/python -m uvicorn app.main:app --reload --port 8000
+```
+
+```bash
+cd backend && ./.venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8000
+```
+
+Then the dashboard, in a second terminal:
+
+```bash
+npm install --prefix frontend && npm run dev --prefix frontend
+```
+
+The dashboard opens at `http://localhost:5173`; the API's interactive docs are at
+`http://localhost:8000/docs`. Point the dashboard elsewhere with
+`VITE_API_URL=http://host:port`.
 
 **Re-fetch live data** (overwrites the committed cache):
 
@@ -407,9 +443,19 @@ backend/
       engine.py            Bar-by-bar execution, costs, trade log, benchmark
       strategies.py        Four strategies behind a common base class
       robustness.py        Parameter/cost/period sweeps, regime attribution
-  tests/                   209 tests
+    api/
+      routes.py            REST endpoints
+      serialise.py         inf/NaN -> null, numpy -> native
+    main.py                FastAPI app, CORS, /health
+  tests/                   262 tests
   scripts/                 One runnable gate per phase
   data_cache/              Committed CSV market data
+frontend/
+  src/
+    api.ts                 Typed client; every numeric field is `number | null`
+    format.ts              Display formatting; null renders as an em dash
+    App.tsx                Shell, tabs, asset picker, disclaimer
+    views/                 Overview · Risk · Correlation · Backtest · Research
 docs/
   problem-statement.pdf
   PROJECT_PLAN_FIN_original.md

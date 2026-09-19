@@ -7,3 +7,7 @@ node_modules/
 dist/
 .pytest_cache/
 .DS_Store
+
+# frontend build output
+frontend/dist/
+frontend/node_modules/

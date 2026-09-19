@@ -6,3 +6,4 @@ pandas
 numpy
 requests
 pytest
+httpx          # required by fastapi.testclient

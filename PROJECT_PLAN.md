@@ -43,7 +43,7 @@ Every requirement from the problem statement, mapped to where it is delivered.
 | 14 | Strategy vs Buy-and-Hold benchmark | 3 | ✅ Done |
 | 15 | Robustness testing (parameter / cost / period sweeps) | 5 | ✅ Done |
 | 16 | Market regime analysis (bull / bear / high-vol / low-vol) | 5 | ✅ Done |
-| 17 | Dashboard: prices, SMA/EMA, returns & volatility, drawdowns, correlation heatmap, buy/sell signals, equity curves, strategy vs benchmark | 6 | ⬜ Pending |
+| 17 | Dashboard: prices, SMA/EMA, returns & volatility, drawdowns, correlation heatmap, buy/sell signals, equity curves, strategy vs benchmark | 6 | ✅ Done |
 | 18 | Bias minimisation: look-ahead, data leakage, unrealistic execution, over-optimisation | 3 + 5 | ✅ Done (4 of 4) |
 | 19 | "Not a guarantee of future returns" disclaimer | 7 | ⬜ Pending |
 
@@ -219,7 +219,7 @@ and costs consumed 67% of its gross return. Both now use a confirmation band
   isolated spike means overfit. This is the visual argument against over-optimisation.
 - Cost sensitivity and sub-period sweeps.
 
-### Phase 6 — API + dashboard · 5 h · ⬜ PENDING
+### Phase 6 — API + dashboard · 5 h · ✅ COMPLETE
 Nine endpoints, no more:
 
 ```
@@ -235,8 +235,20 @@ Five dashboard views: **Overview** (price + SMA/EMA + volume + signal markers) �
 rolling) · **Backtest** (config → equity vs benchmark, metrics, trade log) ·
 **Research** (regime table + robustness heatmap).
 
-*Known task:* `Sortino` and `profit_factor` can legitimately be `inf`, which is
-not JSON-serialisable. A sanitiser is required at the API boundary.
+**Verification gate — passed.** 53 API tests (262 total) plus a live browser walkthrough:
+1. ✅ Every endpoint's raw body parses with a **strict** JSON parser that rejects
+   `Infinity`/`NaN` — Python's `json.loads` accepts both by default, so the
+   permissive parser would have hidden the bug that breaks `JSON.parse`.
+2. ✅ The `inf` case is proven reachable, so test 1 cannot pass vacuously.
+3. ✅ 404 on unknown asset/strategy, 422 on invalid strategy params and configs.
+4. ✅ Warm-up `NaN` arrives as `null`, not as zero.
+5. ✅ All five views rendered and walked in a real browser; console clean.
+
+The `inf`/`NaN` sanitiser flagged back in Phase 2 is `app/api/serialise.py`.
+`inf` becomes `null` rather than a large sentinel: a sentinel would be plotted
+as a real value and silently distort a chart. The dashboard confirms this
+end-to-end — NVDA's crossover has no losing trades, so its profit factor is
+`inf`, and the UI shows an em dash.
 
 ### Phase 7 — Harden & demo · 2.5 h · ⬜ PENDING
 ~20 pytest cases on the maths that must be correct, including the look-ahead
@@ -301,6 +313,21 @@ punishes the result arbitrarily. Open trades are marked to market, included in
 equity, and counted separately as `num_open_trades`, so `num_trades` means
 *completed round trips*. Buy-and-hold therefore reports 0 trades and 1 open
 position, which is literally what it does.
+
+**D20 — Non-finite numbers cross the wire as `null`, never as a sentinel (Phase 6).**
+`inf` (Sortino with no losing day, profit factor with no losing trade) and `NaN`
+(indicator warm-up) are correct answers, not errors. Python writes them as bare
+`Infinity`/`NaN` tokens that `JSON.parse` rejects outright. Substituting a large
+number instead would be worse: charts would plot it as real data. `null` is
+skipped by every charting library and reads honestly as "undefined here". The
+API tests parse raw bytes with `parse_constant` set to raise, so a regression
+fails loudly rather than only breaking the browser.
+
+**D21 — Backtest parameters are passed explicitly, not read from state (Phase 6).**
+The Backtest view's first run silently never fired: one effect set the strategy
+defaults and another triggered the run, and the run read `params` from state
+that had not updated yet. `runWith(params, config)` takes them as arguments, so
+the initial render and the manual button share one code path with no race.
 
 **D17 — Excess return is geometric, not arithmetic (Phase 5, post-audit fix).**
 `strategy_total − benchmark_total` is meaningless once returns compound large.
@@ -415,6 +442,6 @@ production SLOs.
 - ✅ 4 strategies backtested with costs, sizing and a like-for-like benchmark
 - ✅ Look-ahead bias structurally prevented **and** proven by a regression test
 - 🔨 Regime attribution and robustness surfaces computed; visualisation pending (Phase 6)
-- ⬜ Dashboard covering all 8 required visualisations
+- ✅ Dashboard covering all 8 required visualisations
 - ⬜ Core maths covered by tests that verify values, not just absence of crashes
 - ⬜ Runs end-to-end offline from the committed cache
