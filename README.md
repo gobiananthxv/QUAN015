@@ -2,10 +2,14 @@
 
 **Quantitative Multi-Asset Financial Intelligence & Backtesting Platform**
 
-A unified research platform that collects a decade of daily market history across
-three asset classes, computes quantitative indicators and risk metrics, measures
-how cross-asset relationships shift over time, and backtests trading strategies
-against a buy-and-hold benchmark with realistic execution costs.
+Most backtesting tools tell you what a strategy returned. This one tells you
+whether you should believe the number.
+
+QMAFIB collects ten years of daily market history across three asset classes,
+computes the standard quantitative indicators and risk metrics, measures how
+cross-asset relationships shift over time, and backtests trading strategies
+against a buy-and-hold benchmark with realistic execution costs — then stress-tests
+every result for the four ways backtests normally lie.
 
 > ⚠️ **Research tool, not investment advice.** Every figure here is computed from
 > historical data. Backtested performance is not a prediction of future returns.
@@ -14,147 +18,73 @@ against a buy-and-hold benchmark with realistic execution costs.
 
 ## Contents
 
-- [Status](#status) — what is built
-- [How it works](#how-it-works) — the pipeline, stage by stage
-- [Quick start](#quick-start) — install and run
-- [Results](#results) — what the engine actually finds
-- [Design decisions](#design-decisions) — the choices that affect correctness
-- [Bias controls](#bias-controls) — how the four named failure modes are prevented
-- [Project layout](#project-layout)
-- [Data quality](#data-quality)
-- [Demo walkthrough](DEMO.md) — a scripted three-minute tour
+| | |
+|:--|:--|
+| [Quick start](#quick-start) | Get it running in one command |
+| [What you get](#what-you-get) | The five views and what each answers |
+| [How it works](#how-it-works) | The pipeline, stage by stage |
+| [What the platform found](#what-the-platform-found) | Real results, including the unflattering ones |
+| [Why you can trust the numbers](#why-you-can-trust-the-numbers) | Bias controls and the decisions behind them |
+| [Project layout](#project-layout) | Where everything lives |
+| [Extending it](#extending-it) | Adding assets and strategies |
+| [Reference](#reference) | Endpoints, dependencies, data quality, troubleshooting |
+| [DEMO.md](DEMO.md) | A scripted three-minute walkthrough |
+| [PROJECT_PLAN.md](PROJECT_PLAN.md) | Phase plan and full decision log |
 
----
-
-## Status
-
-| Phase | Scope | Status |
-|:--|:--|:--|
-| 0 | Scaffold | ✅ Complete |
-| 1 | Data pipeline | ✅ Complete |
-| 2 | Analytics engine | ✅ Complete |
-| 3 | Backtesting engine | ✅ Complete |
-| 4 | Strategies | ✅ Complete |
-| 5 | Regime attribution + robustness | ✅ Complete |
-| 6 | REST API + dashboard | ✅ Complete |
-| 7 | Hardening + demo | ✅ Complete |
-
-**262 tests passing**, all seven phase gates green. Full breakdown and decision
-log in [`PROJECT_PLAN.md`](PROJECT_PLAN.md); the walkthrough is in
-[`DEMO.md`](DEMO.md).
-
----
-
-## How it works
-
-The platform is a pipeline of nine stages. Each stage reads only from the stage
-above it, so any stage can be run, tested or replaced on its own.
-
-### Stages 1–3 · Data
-
-| # | Stage | Entry point | What happens |
-|:--|:--|:--|:--|
-| 1 | **Ingest** | `sources.fetch_ohlcv(key)` | Yahoo chart API with retry and backoff. Split and dividend adjustment applied across all four OHLC fields. |
-| 2 | **Validate** | `validate.validate_ohlcv(df, key)` | OHLC invariants repaired, null and non-positive closes dropped, duplicates removed, index sorted, gaps counted. Returns a quality report. |
-| 3 | **Cache** | `store.load_asset(key)`<br>`store.load_panel(keys)` | Committed CSV cache — the platform runs offline. `load_panel` aligns assets onto a common trading calendar. |
-
-### Stage 4 · Analytics
-
-These three run independently off the cache and never touch each other.
-
-| Stage | Entry point | Produces |
-|:--|:--|:--|
-| **4a Indicators** | `compute_indicators(df)` | SMA, EMA, RSI, MACD, Bollinger (+ z-score), ATR, ROC |
-| **4b Metrics** | `summarise(returns, ann_factor)` | Returns, volatility, Sharpe, Sortino, Calmar, max drawdown + duration |
-| **4c Correlation** | `correlation_matrix()`<br>`rolling_correlation(a, b)` | Static matrix, covariance, rolling pairwise correlation |
-
-### Stages 5–6 · Backtesting
-
-| # | Stage | Entry point | What happens |
-|:--|:--|:--|:--|
-| 5 | **Signals** | `strategy.generate_signals(df)` | Returns the target position at each bar's **close**, in `{-1, 0, 1}`. Four strategies available. |
-| 6 | **Execute** | `engine.run_backtest(df, signals, asset, config)`<br>`engine.buy_and_hold(df, asset, config)` | Lags signals one bar, fills at the next open ± slippage, charges commission on both sides, sizes from equity, marks to market every close. |
-
-Stage 6 returns a `BacktestResult` carrying the equity curve, per-bar position,
-and a full trade log. The benchmark runs through the **same** engine with the
-**same** costs.
-
-### Stage 7 · Robustness and attribution
-
-| Stage | Entry point | Answers |
-|:--|:--|:--|
-| **7a Parameter sweep** | `parameter_sweep(asset, strategy, grid)`<br>`plateau_report(sweep, params)` | Does this survive changing the parameters, or is it one lucky cell? |
-| **7b Cost sweep** | `cost_sweep(asset, strategy)` | Does the edge survive realistic friction? |
-| **7c Period sweep** | `period_sweep(asset, strategy, n_windows)` | Is this an edge, or one good episode? |
-| **7d Regime attribution** | `regime_attribution(asset, strategy)` | *Where* does it beat the benchmark — and at what exposure? |
-
-### Stages 8–9 · API and dashboard
-
-| # | Stage | Entry point | What happens |
-|:--|:--|:--|:--|
-| 8 | **Serve** | `uvicorn app.main:app` | Eleven endpoints. Every response passes through `serialise.clean`, so `inf` and `NaN` leave as `null`. |
-| 9 | **Visualise** | `npm run dev --prefix frontend` | React + Vite + TypeScript, five views, Recharts. |
-
-**Endpoints** — `GET /health` `/api/assets` `/api/strategies` `/api/ohlcv`
-`/api/indicators` `/api/metrics` `/api/correlation` `/api/rolling-correlation`
-`/api/regime` `/api/panel` `/api/backtest/regime-attribution`, and
-`POST /api/backtest` `/api/backtest/compare` `/api/backtest/robustness`.
-Interactive docs at `http://localhost:8000/docs`.
-
-**Views** — **Overview** (log-scale price, SMA 50/200, volume, shaded in-market
-bands) · **Risk** (metric tiles, cumulative return, underwater drawdown, rolling
-volatility) · **Correlation** (matrix heatmap, rolling correlation with a
-selectable window) · **Backtest** (live parameter and cost controls, equity curve
-vs benchmark, full trade log) · **Research** (Sharpe surface heatmap with the
-best cell marked, plateau verdict, cost decay, period stability, regime
-attribution).
-
-### The one contract everything depends on
-
-```
-position[t] == sign(signal[t-1]),  filled at open[t]
-```
-
-A signal derived from bar *t*'s close cannot be acted on until bar *t+1* opens.
-Every backtest number shifts if this changes, so it is pinned by a dedicated
-test (`test_execution_lag_is_exactly_one_bar`) rather than left to convention.
+**Status:** all seven phases complete · **262 tests passing** · all 19
+problem-statement requirements delivered.
 
 ---
 
 ## Quick start
 
-Requires Python 3.11+. No database, no Redis, no Docker.
+**Requirements:** Python 3.11+ and Node 18+. No database, no Redis, no Docker.
 
-> **Interpreter path differs by platform.** The venv puts Python at
-> `.venv/Scripts/python.exe` on Windows and `.venv/bin/python` on macOS and
-> Linux. Both sets of commands are given below — use the ones for your OS.
-> Activating the venv first (`source .venv/bin/activate` or
-> `.venv\Scripts\Activate.ps1`) lets you type plain `python` instead.
+Ten years of market data is committed to the repository, so nothing below needs
+an internet connection.
 
 ### One command
+
+**macOS / Linux / Git Bash / WSL**
 
 ```bash
 ./run.sh
 ```
 
+**Windows PowerShell**
+
 ```powershell
-.un.ps1
+.\run.ps1
 ```
 
-Creates the virtualenv and installs dependencies if they are missing, then
-starts the API on `:8000` and the dashboard on `:5173`. Ctrl-C stops both.
+On first run this creates the virtualenv, installs both sets of dependencies
+(~30s), and then starts:
 
-To run every phase gate — the full test suite plus all five verification
-scripts — in one go:
+| | |
+|:--|:--|
+| **Dashboard** | **http://localhost:5173** ← open this |
+| API | http://localhost:8000 |
+| API docs | http://localhost:8000/docs |
+
+Press **Ctrl-C** to stop both servers.
+
+> **Use `localhost`, not `127.0.0.1`.** Vite's dev server binds to IPv6, so
+> `http://127.0.0.1:5173` will refuse the connection while `http://localhost:5173`
+> works.
+
+### Verify everything works
+
+Runs the full test suite plus all five phase-gate scripts, and exits non-zero if
+anything fails:
 
 ```bash
 ./verify.sh
 ```
 
 <details>
-<summary>Manual setup, if you prefer to run the pieces yourself</summary>
+<summary><strong>Manual setup</strong> — if you'd rather run the pieces yourself</summary>
 
-### Install
+#### 1 · Install backend dependencies
 
 **macOS / Linux**
 
@@ -162,32 +92,44 @@ scripts — in one go:
 cd backend && python3 -m venv .venv --system-site-packages && .venv/bin/python -m pip install -r requirements.txt
 ```
 
-**Windows (PowerShell or Git Bash)**
+**Windows**
 
 ```bash
 cd backend && python -m venv .venv --system-site-packages && ./.venv/Scripts/python.exe -m pip install -r requirements.txt
 ```
 
 `--system-site-packages` reuses any pandas/numpy already installed system-wide.
-Drop the flag for a fully isolated environment; it just downloads more.
+Drop the flag for full isolation; it just downloads more.
 
-### Run
+#### 2 · Start the API
 
-The market-data cache is committed, so everything below runs offline.
+```bash
+cd backend && .venv/bin/python -m uvicorn app.main:app --reload --port 8000
+```
 
-**Run the test suite:**
+```bash
+cd backend && ./.venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8000
+```
+
+#### 3 · Start the dashboard, in a second terminal
+
+```bash
+npm install --prefix frontend && npm run dev --prefix frontend
+```
+
+Point the dashboard at a different API with `VITE_API_URL=http://host:port`.
+If you change the dashboard's port, add the new origin to the CORS list in
+`backend/app/main.py`.
+
+#### Run the backend on its own
+
+The quant layer never imports FastAPI, so every calculation works headless.
+Each script exits non-zero if an invariant breaks — these are the phase gates,
+not demos. Substitute `./.venv/Scripts/python.exe` on Windows.
 
 ```bash
 cd backend && .venv/bin/python -m pytest tests/ -q
 ```
-
-```bash
-cd backend && ./.venv/Scripts/python.exe -m pytest tests/ -q
-```
-
-**Run each pipeline stage.** Each script exits non-zero if an invariant breaks —
-these are the phase gates, not just demos. On Windows, substitute
-`./.venv/Scripts/python.exe` for `.venv/bin/python` in each command.
 
 ```bash
 cd backend && .venv/bin/python scripts/bootstrap_data.py
@@ -209,43 +151,122 @@ cd backend && .venv/bin/python scripts/strategy_report.py
 cd backend && .venv/bin/python scripts/robustness_report.py
 ```
 
-### Run the pieces separately
+#### Refresh the market data
 
-Two processes. Start the API first:
-
-```bash
-cd backend && .venv/bin/python -m uvicorn app.main:app --reload --port 8000
-```
-
-```bash
-cd backend && ./.venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8000
-```
-
-Then the dashboard, in a second terminal:
-
-```bash
-npm install --prefix frontend && npm run dev --prefix frontend
-```
-
-The dashboard opens at `http://localhost:5173`; the API's interactive docs are at
-`http://localhost:8000/docs`. Point the dashboard elsewhere with
-`VITE_API_URL=http://host:port`.
-
-**Re-fetch live data** (overwrites the committed cache):
+Re-fetches from Yahoo and overwrites the committed cache:
 
 ```bash
 cd backend && .venv/bin/python scripts/bootstrap_data.py --refresh
-```
-
-```bash
-cd backend && ./.venv/Scripts/python.exe scripts/bootstrap_data.py --refresh
 ```
 
 </details>
 
 ---
 
-## Results
+## What you get
+
+Five views. Each answers one question.
+
+### 1 · Overview — *what has this asset done?*
+
+Log-scale price with SMA 50/200 overlaid, volume, and green bands marking the
+periods a crossover strategy would have held a position.
+
+Log scale matters: on a linear axis, a decade of NVIDIA compresses its first
+eight years into a flat line against the last two.
+
+### 2 · Risk — *how much pain did that involve?*
+
+Sharpe, Sortino, Calmar, volatility, maximum drawdown and how long it lasted —
+plus the cumulative return, the underwater drawdown curve, and rolling
+volatility.
+
+### 3 · Correlation — *do these assets actually diversify each other?*
+
+A correlation matrix computed on **returns**, not price levels, plus rolling
+correlation with a selectable window.
+
+The rolling view is the point. A single correlation number hides that the same
+pair swings from −0.47 to +0.62 over a decade.
+
+### 4 · Backtest — *what would this strategy have done?*
+
+Pick a strategy, edit its parameters, set your capital, commission and slippage,
+and run. You get the equity curve against buy-and-hold, a full metric
+comparison, and a complete trade log — entry, exit, size, gross P&L, costs, net.
+
+Both the strategy and the benchmark pay the same costs.
+
+### 5 · Research — *should I believe any of this?*
+
+The part most backtesting tools skip:
+
+- **Parameter surface** — a Sharpe heatmap across the whole parameter grid, not
+  just the best cell, with a plain-English robustness verdict
+- **Cost sensitivity** — how the result decays as friction rises
+- **Period stability** — five consecutive windows, signals regenerated in each
+- **Regime attribution** — where the strategy beats the benchmark, and at what
+  exposure
+
+---
+
+## How it works
+
+Nine stages. Each reads only from the stage above it, so any stage can be run,
+tested or replaced on its own.
+
+### Data
+
+| # | Stage | Entry point | What happens |
+|:--|:--|:--|:--|
+| 1 | **Ingest** | `sources.fetch_ohlcv(key)` | Yahoo chart API with retry and backoff. Split and dividend adjustment applied across all four OHLC fields. |
+| 2 | **Validate** | `validate.validate_ohlcv(df, key)` | OHLC invariants repaired, null and non-positive closes dropped, duplicates removed, index sorted, gaps counted. Returns a quality report. |
+| 3 | **Cache** | `store.load_asset(key)`<br>`store.load_panel(keys)` | Committed CSV cache — the platform runs offline. `load_panel` aligns assets onto a common trading calendar. |
+
+### Analytics
+
+These three run independently off the cache and never touch each other.
+
+| # | Stage | Entry point | Produces |
+|:--|:--|:--|:--|
+| 4a | **Indicators** | `compute_indicators(df)` | SMA, EMA, RSI, MACD, Bollinger (+ z-score), ATR, ROC |
+| 4b | **Metrics** | `summarise(returns, ann_factor)` | Returns, volatility, Sharpe, Sortino, Calmar, max drawdown + duration |
+| 4c | **Correlation** | `correlation_matrix()`<br>`rolling_correlation(a, b)` | Static matrix, covariance, rolling pairwise correlation |
+
+### Backtesting
+
+| # | Stage | Entry point | What happens |
+|:--|:--|:--|:--|
+| 5 | **Signals** | `strategy.generate_signals(df)` | Target position at each bar's **close**, in `{-1, 0, 1}` |
+| 6 | **Execute** | `engine.run_backtest(...)`<br>`engine.buy_and_hold(...)` | Lags signals one bar, fills at the next open ± slippage, charges commission both sides, sizes from equity, marks to market every close |
+
+Stage 6 returns a `BacktestResult` carrying the equity curve, per-bar position
+and a full trade log.
+
+### Research, API, dashboard
+
+| # | Stage | Entry point | Answers |
+|:--|:--|:--|:--|
+| 7a | **Parameter sweep** | `parameter_sweep(...)`<br>`plateau_report(...)` | Does this survive changing the parameters, or is it one lucky cell? |
+| 7b | **Cost sweep** | `cost_sweep(...)` | Does the edge survive realistic friction? |
+| 7c | **Period sweep** | `period_sweep(...)` | Is this an edge, or one good episode? |
+| 7d | **Regime attribution** | `regime_attribution(...)` | *Where* does it beat the benchmark — and at what exposure? |
+| 8 | **Serve** | `uvicorn app.main:app` | 14 endpoints; `inf`/`NaN` leave as `null` |
+| 9 | **Visualise** | `npm run dev --prefix frontend` | React + Vite + TypeScript, five views |
+
+### The one contract everything depends on
+
+```
+position[t] == sign(signal[t-1]),  filled at open[t]
+```
+
+A signal derived from bar *t*'s close cannot be acted on until bar *t+1* opens.
+Every backtest number shifts if this changes, so it is pinned by a dedicated
+test (`test_execution_lag_is_exactly_one_bar`) rather than left to convention.
+
+---
+
+## What the platform found
 
 ### Coverage
 
@@ -271,9 +292,9 @@ Aligned cross-asset panel: **2,511 common trading days.**
 ### Correlation is not a constant
 
 Full-sample daily-return correlation is low across every pair — GOLD~BTC 0.10,
-GOLD~NVDA 0.04, BTC~NVDA 0.22. But the rolling 90-day figure swings through a
-range of 0.80 to 0.98 depending on the pair. A single correlation number hides
-the thing worth knowing, which is why the rolling view exists.
+GOLD~NVDA 0.04, BTC~NVDA 0.22. But the rolling 90-day figure swings from **−0.47
+to +0.62**. Diversification that holds in calm markets can disappear exactly
+when it is needed.
 
 ### Strategy vs benchmark
 
@@ -310,54 +331,24 @@ buy-and-hold paying the same entry cost.
 | Mean Reversion | 248.4% | 0.53 | −55.4% | 42 | 18% |
 | **Buy & Hold** | **13,947%** | **1.20** | −66.3% | — | 100% |
 
-### What the results actually say
+### Reading those tables honestly
 
-**Buy-and-hold wins on return in 2 of 3 assets.** We report that as-is rather
-than tuning until the strategies win. On assets that trended this hard for a
-decade, sitting out of the market costs more than the crashes it avoids.
+**Buy-and-hold wins on return in two of three assets.** We report that as-is
+rather than tuning until the strategies win. On assets that trended this hard
+for a decade, sitting out of the market costs more than the crashes it avoids.
 
 **Every strategy reduced drawdown on BTC and NVDA.** NVDA's SMA crossover gives
 up half the return but cuts the worst drawdown from −66% to −38%. That is a
 different objective, not a worse one.
 
 **One genuine winner: Momentum on BTC** — 13,485% against the benchmark's
-13,216%, with a higher Sharpe (1.16 vs 1.04) and a shallower drawdown (−64% vs
-−83%), in 18 trades. EMA Trend beats the benchmark's Sharpe on BTC too (1.13)
-while giving up return.
+13,216%, with a higher Sharpe and a shallower drawdown, in 18 trades.
 
 **Mean reversion lost money on BTC** (−50.8%). Buying dips works until the dip
-keeps going; its −81% drawdown says the rest. Note it loses at zero cost too
-(−42.1%), so this is the rule failing, not friction.
+keeps going. It loses at zero cost too (−42.1%), so this is the rule failing,
+not friction.
 
-A platform that only surfaced strategies beating their benchmark would be
-selection bias with a dashboard.
-
-### Why EMA Trend and Momentum use a confirmation band
-
-Both rules originally tested a strict inequality against a noisy quantity, and
-both whipsawed badly: **50% of gold's EMA Trend trades lasted two bars or
-fewer**, and transaction costs consumed **67% of its gross return**. That is
-noise trading, and it is identifiable as a defect without looking at a single
-return figure.
-
-Both now use a confirmation band — enter above one level, exit below a lower
-one, hold in between — which makes them stateful:
-
-| Asset | Strategy | Trades before → after | ≤2-bar trades before → after |
-|:--|:--|:--|:--|
-| GOLD | EMA Trend | 129 → 33 | 50% → 6% |
-| GOLD | Momentum | 35 → 6 | 31% → 0% |
-| BTC | Momentum | 63 → 18 | 43% → 0% |
-| NVDA | EMA Trend | 116 → 52 | 37% → 2% |
-
-The defaults (1% and 5%) are round numbers chosen for being round, **not tuned
-against results** — the band improves gold and NVDA but *reduced* EMA Trend's
-BTC return from 15,254% to 8,558%. Picking a band because it flattered the
-average would be exactly the over-optimisation the brief warns against, applied
-after seeing the answers. Phase 5's robustness sweep decides whether these
-defaults sit on a stable plateau or a lucky spike.
-
-### Robustness: does any of this survive scrutiny?
+### Does any of it survive scrutiny?
 
 Sharpe across a wide parameter grid, summarised as `robustness` = median ÷ best.
 Near 1.0 means the surface is flat and the parameter choice barely matters; near
@@ -370,25 +361,23 @@ Near 1.0 means the surface is flat and the parameter choice barely matters; near
 | Momentum | 0.82 | 0.90 | 0.89 | robust across the board |
 | Mean Reversion | **0.10** | **0.24** | 0.63 | **fragile — treat as over-fitted** |
 
-The tool flags our own weakest strategy. Mean Reversion's headline numbers come
-from a handful of grid cells, which is consistent with it losing money on BTC.
+**The tool flags our own weakest strategy.** Mean Reversion's headline numbers
+come from a handful of grid cells, consistent with it losing money on BTC.
 
-**Period stability is the harshest test, and most strategies fail it.** Split
-into 5 consecutive windows with signals regenerated per window, strategies beat
-buy-and-hold in only 1–2 windows out of 5. NVDA's SMA crossover ends the
-2022–2024 window with **30% of the wealth** buy-and-hold produced — being out of
-the market during the AI run was ruinous. One decade-long backtest hides that
-completely.
+**Period stability is the harshest test, and most strategies fail it.** Across
+five consecutive windows with signals regenerated in each, strategies beat
+buy-and-hold in only 1–2 windows of 5. NVDA's SMA crossover ends the 2022–2024
+window with **30% of the wealth** buy-and-hold produced — being out of the market
+during the AI run was ruinous. One decade-long backtest hides that completely.
 
 Excess is reported **geometrically** — `(1+strategy)/(1+benchmark) − 1` — not as
-a difference of total returns. Subtracting two compounded returns is unreadable
-once they are large: that same window's arithmetic excess is −639%, which reads
-as losing six times your money when the strategy actually *gained* 177%. The
-geometric figure is bounded below by −100% and means what it says.
+a difference of total returns. That same window's arithmetic excess reads −639%,
+which sounds like losing six times your money when the strategy actually *gained*
+177%. The geometric figure is bounded below by −100% and means what it says.
 
-**Cost sensitivity finds a real cliff.** Mean Reversion on gold turns negative
-by 25 bps per side, and EMA Trend on gold by 100 bps. Momentum on gold survives
-at 157% even at 100 bps. An edge that only exists at zero cost is not an edge.
+**Cost sensitivity finds a real cliff.** Mean Reversion on gold turns negative by
+25 bps per side. Momentum on gold survives at 157% even at 100 bps. An edge that
+only exists at zero cost is not an edge.
 
 ### Where strategies actually earn their keep
 
@@ -404,15 +393,27 @@ regime, with exposure. NVDA / Momentum:
 | normal vol | 705 | 90% | 194.1% | 379.1% | ❌ |
 
 The **exposure** column is the real story: 18% invested in bear regimes against
-94% in bull. The strategy's value is not a higher return, it is being absent
-when the market falls — which is exactly what a trend filter is for, now
-measured rather than asserted.
+94% in bull. The strategy's value is not a higher return, it is being absent when
+the market falls — which is exactly what a trend filter is for, now measured
+rather than asserted.
 
 ---
 
-## Design decisions
+## Why you can trust the numbers
 
-Four choices that materially affect whether the numbers are right.
+### The four failure modes, each with a structural defence
+
+The problem statement names four ways backtests lie. Each gets a mechanism, not
+a disclaimer.
+
+| Risk | Defence |
+|:--|:--|
+| **Look-ahead bias** | Signals are shifted one bar and filled at the next open. Trading on a close you could not have observed is impossible by construction. Pinned by a dedicated test. |
+| **Data leakage** | Indicators use only rolling and ewm windows; regime thresholds use expanding quantiles. 14 causality tests confirm that appending future bars never changes a past value — 9 indicators, 4 strategies, and the regime labels. |
+| **Unrealistic execution** | Commission and slippage charged on notional on both sides, with slippage always moving price against the trade. The benchmark pays the same entry cost. |
+| **Over-optimisation** | Parameter sweeps report the whole Sharpe surface plus median, worst, share-positive and a neighbour comparison — never just the maximum. The verdict labels our own Mean Reversion strategy *fragile*. |
+
+### Four decisions that change whether the numbers are right
 
 **Per-asset annualisation.** Bitcoin trades 365 days a year; gold futures and
 NVIDIA do not. The annualisation factor is a property of the asset, never a
@@ -435,19 +436,23 @@ close is applied to open, high and low too. Adjusting only the close would
 corrupt open-based fills at every split. NVIDIA correctly reads $1.56 in 2016 —
 the 40×-split-adjusted value of its then-$62 price.
 
----
+The full reasoning for all 21 decisions is in
+[`PROJECT_PLAN.md`](PROJECT_PLAN.md#6-decision-log).
 
-## Bias controls
+### Testing
 
-The problem statement names four failure modes. Each gets a structural defence,
-not a disclaimer.
+**262 tests.** Values are hand-computed against known answers, not snapshotted
+from the implementation — a snapshot test locks in whatever bug exists.
 
-| Risk | Defence |
-|:--|:--|
-| **Look-ahead bias** | Signals are shifted one bar and filled at the next open. Trading on a close you could not have observed is impossible by construction. Pinned by a dedicated test. |
-| **Data leakage** | Indicators use only rolling and ewm windows; regime thresholds use expanding quantiles. 14 causality tests confirm that appending future bars never changes a past value — 9 indicators, 4 strategies, and the regime labels. |
-| **Unrealistic execution** | Commission and slippage charged on notional on both sides, with slippage always moving price against the trade. The benchmark pays the same entry cost. |
-| **Over-optimisation** | Parameter sweeps report the whole Sharpe surface plus median, worst, share-positive and a neighbour comparison — never just the maximum. `plateau_report` returns an explicit verdict, and it labels our own Mean Reversion strategy *fragile*. |
+| Suite | Tests | Covers |
+|:--|--:|:--|
+| `test_indicators.py` | 31 | Hand-computed EMA recursion, Bollinger population std, Wilder ATR, plus 9 causality tests |
+| `test_metrics.py` | 32 | Closed-form cases: compounding, CAGR doubling, Sharpe by formula, hand-built drawdown paths |
+| `test_correlation_regime.py` | 27 | Panel alignment, matrix symmetry, regime label rules, regime causality |
+| `test_engine.py` | 33 | Look-ahead, cost arithmetic to the cent, equity curve vs trade log agreement |
+| `test_strategies.py` | 51 | Known-answer price paths, parameter validation, strategy causality |
+| `test_robustness.py` | 35 | Plateau detection against constructed surfaces with known answers |
+| `test_api.py` | 53 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
 
 ---
 
@@ -497,7 +502,84 @@ is importable and testable without a running server.
 
 ---
 
-## Data quality
+## Extending it
+
+### Add an asset
+
+One entry in `backend/app/config.py`:
+
+```python
+ASSETS = {
+    ...
+    "SPY": Asset("SPY", "S&P 500 ETF", "SPY", "equity", 252),
+}
+```
+
+Then `python scripts/bootstrap_data.py --refresh`. The API, the dashboard's asset
+picker, the correlation matrix and every sweep pick it up with no other changes.
+
+### Add a strategy
+
+Subclass `Strategy`, implement one method, add it to the registry:
+
+```python
+@dataclass
+class RsiReversal(Strategy):
+    name: ClassVar[str] = "rsi_reversal"
+    label: ClassVar[str] = "RSI Reversal"
+    description: ClassVar[str] = "Long when RSI leaves oversold territory."
+    defaults: ClassVar[dict] = {"window": 14, "oversold": 30}
+
+    def generate_signals(self, df):
+        r = rsi(df["close"], self.params["window"])
+        return self._hold(r > self.params["oversold"], r < 20, df.index)
+```
+
+Return the target position at each bar's **close** in `{-1, 0, 1}`. The engine
+applies the execution lag — a strategy must never lag its own signals, or it
+double-lags. The strategy dropdowns, comparison runs and robustness sweeps all
+update automatically.
+
+---
+
+## Reference
+
+### API endpoints
+
+Interactive docs at `http://localhost:8000/docs`.
+
+| Method | Path | Returns |
+|:--|:--|:--|
+| `GET` | `/health` | Liveness, asset list, disclaimer |
+| `GET` | `/api/assets` | Asset registry and cache status |
+| `GET` | `/api/strategies` | Strategy catalogue with defaults |
+| `GET` | `/api/ohlcv?asset=` | Validated bars + quality report |
+| `GET` | `/api/indicators?asset=` | All indicators, configurable periods |
+| `GET` | `/api/metrics?asset=` | Risk summary + plot series |
+| `GET` | `/api/correlation?window=` | Matrix + rolling correlation |
+| `GET` | `/api/rolling-correlation?a=&b=` | One pair's rolling correlation |
+| `GET` | `/api/regime?asset=` | Regime labels over time |
+| `GET` | `/api/panel` | Aligned multi-asset close panel |
+| `GET` | `/api/backtest/regime-attribution` | Strategy vs benchmark by regime |
+| `POST` | `/api/backtest` | One strategy + benchmark + trade log |
+| `POST` | `/api/backtest/compare` | Every strategy against one benchmark |
+| `POST` | `/api/backtest/robustness` | Surface, plateau verdict, cost + period sweeps |
+
+### Dependencies
+
+Seven packages. No database, no cache server, no TA-Lib.
+
+```
+fastapi · uvicorn · pandas · numpy · requests · pytest · httpx
+```
+
+Market data comes from the Yahoo Finance chart API via `requests`. See decision
+**D1** in [`PROJECT_PLAN.md`](PROJECT_PLAN.md#6-decision-log) for why `yfinance`
+and `pyarrow` were dropped.
+
+Frontend: React 19, Vite, TypeScript, Recharts.
+
+### Data quality
 
 Reported rather than silently smoothed.
 
@@ -509,16 +591,20 @@ Reported rather than silently smoothed.
   cross-asset comparisons are like-for-like; single-asset BTC analysis still
   uses the full 3,653-row series.
 
----
+### Troubleshooting
 
-## Dependencies
+| Symptom | Cause | Fix |
+|:--|:--|:--|
+| Dashboard won't load at `127.0.0.1:5173` | Vite binds IPv6 | Use `http://localhost:5173` |
+| "Cannot reach the API" | Backend not running | Start it, or run `./run.sh` which starts both |
+| CORS error in the console | Dashboard on a non-default port | Add the origin to the list in `backend/app/main.py` |
+| Research tab spins for a second | Expected — it runs ~25 backtests plus cost and period sweeps | Wait ~2s |
+| `./run.sh: Permission denied` | Not executable | `chmod +x run.sh verify.sh` |
+| `python3: command not found` on Windows | Use the PowerShell script | `.\run.ps1` |
+| Want to check everything still works | — | `./verify.sh` |
 
-Six packages. No database, no cache server, no TA-Lib.
+### Out of scope
 
-```
-fastapi · uvicorn · pandas · numpy · requests · pytest
-```
-
-Market data comes from the Yahoo Finance chart API via `requests`. See decision
-**D1** in [`PROJECT_PLAN.md`](PROJECT_PLAN.md#6-decision-log) for why `yfinance`
-and `pyarrow` were dropped.
+Listed as *Future Scope* in the problem statement and correctly deferred:
+portfolio optimisation, Monte Carlo simulation, Value at Risk, ML-based regime
+detection, paper trading, real-time data, AI research assistance.
