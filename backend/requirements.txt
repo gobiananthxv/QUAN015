@@ -1,0 +1,8 @@
+# Deliberately minimal: no yfinance, no pyarrow, no DB, no cache server.
+# Market data comes from the Yahoo chart API via requests (see app/data/sources.py).
+fastapi
+uvicorn[standard]
+pandas
+numpy
+requests
+pytest
