@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api, type Asset, type SnapshotEntry, type StrategyInfo } from './api'
 import { ErrorState, Loading } from './components/Common'
+import { PeriodBar } from './components/PeriodBar'
+import { PeriodProvider } from './period'
 import { Backtest } from './views/Backtest'
 import { Compare } from './views/Compare'
 import { Correlation } from './views/Correlation'
@@ -84,7 +86,16 @@ export default function App() {
     .at(-1)
   const totalRows = snapshot.reduce((n, s) => n + (s.rows ?? 0), 0)
 
+  // Widest range any asset covers — the outer limits for the period picker.
+  const starts = snapshot.map((s) => s.start).filter(Boolean) as string[]
+  const ends = snapshot.map((s) => s.end).filter(Boolean) as string[]
+  const bounds = {
+    start: starts.length ? starts.sort()[0] : undefined,
+    end: ends.length ? ends.sort().at(-1) : undefined,
+  }
+
   return (
+    <PeriodProvider bounds={bounds}>
     <div className="app">
       <header className="masthead">
         <div className="brand">
@@ -142,6 +153,8 @@ export default function App() {
         </div>
       </div>
 
+      <PeriodBar />
+
       <div className="disclaimer">
         <strong>Research tool, not investment advice.</strong> Every figure is computed
         from historical data. Backtested performance is not a prediction of future returns.
@@ -161,5 +174,6 @@ export default function App() {
         and slippage · Buy-and-hold pays the same costs
       </footer>
     </div>
+    </PeriodProvider>
   )
 }

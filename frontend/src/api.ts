@@ -251,14 +251,18 @@ export const api = {
         (period.end ? `&end=${period.end}` : ''),
     ),
 
-  correlation: (window = 90) =>
+  correlation: (window = 90, period: Period = {}) =>
     request<{
       assets: string[]
       observations: number
       matrix: { a: string; b: string; value: Num }[]
       window: number
       rolling: Record<string, string | Num>[]
-    }>(`/api/correlation?window=${window}`),
+    }>(
+      `/api/correlation?window=${window}` +
+        (period.start ? `&start=${period.start}` : '') +
+        (period.end ? `&end=${period.end}` : ''),
+    ),
 
   regime: (asset: string) =>
     request<{ asset: string; rows: { date: string; trend_regime: string | null }[] }>(
@@ -286,7 +290,7 @@ export const api = {
       { asset, config, ...period },
     ),
 
-  robustness: (asset: string, strategy: string, config: BacktestConfig) =>
+  robustness: (asset: string, strategy: string, config: BacktestConfig, period: Period = {}) =>
     post<{
       asset: string
       strategy: string
@@ -295,11 +299,13 @@ export const api = {
       plateau: Plateau
       costs: Record<string, Num>[]
       periods: Record<string, Num | string>[]
-    }>('/api/backtest/robustness', { asset, strategy, config }),
+    }>('/api/backtest/robustness', { asset, strategy, config, ...period }),
 
-  regimeAttribution: (asset: string, strategy: string) =>
+  regimeAttribution: (asset: string, strategy: string, period: Period = {}) =>
     request<{ rows: RegimeRow[] }>(
-      `/api/backtest/regime-attribution?asset=${asset}&strategy=${strategy}`,
+      `/api/backtest/regime-attribution?asset=${asset}&strategy=${strategy}` +
+        (period.start ? `&start=${period.start}` : '') +
+        (period.end ? `&end=${period.end}` : ''),
     ),
 }
 

@@ -11,6 +11,7 @@ import {
   YAxis,
 } from 'recharts'
 import { api, type Num } from '../api'
+import { describePeriod, usePeriod } from '../period'
 import { ErrorState, Loading, Note, Panel } from '../components/Common'
 import { Figure, Insight } from '../components/Insight'
 import { num, tipNum3 } from '../format'
@@ -25,6 +26,7 @@ function heatColor(v: Num): string {
 }
 
 export function Correlation() {
+  const { period, bounds } = usePeriod()
   const [data, setData] = useState<Awaited<ReturnType<typeof api.correlation>> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [window, setWindow] = useState(90)
@@ -32,10 +34,10 @@ export function Correlation() {
   const load = () => {
     setData(null)
     setError(null)
-    api.correlation(window).then(setData).catch((e) => setError(e.message))
+    api.correlation(window, period).then(setData).catch((e) => setError(e.message))
   }
 
-  useEffect(load, [window])
+  useEffect(load, [window, period])
 
   if (error) return <ErrorState error={error} onRetry={load} />
   if (!data) return <Loading what="correlations" />
@@ -85,7 +87,7 @@ export function Correlation() {
 
       <Panel
         title="Correlation matrix"
-        subtitle={`Daily returns · ${data.observations.toLocaleString()} common trading days`}
+        subtitle={`${describePeriod(period, bounds)} · ${data.observations.toLocaleString()} common trading days`}
       >
         <table className="heatmap">
           <thead>

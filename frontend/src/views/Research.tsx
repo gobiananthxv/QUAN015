@@ -13,6 +13,7 @@ import {
 } from 'recharts'
 import { api, DEFAULT_CONFIG, type Num, type Plateau, type RegimeRow, type StrategyInfo } from '../api'
 import { ErrorState, Loading, Note, Panel } from '../components/Common'
+import { describePeriod, usePeriod } from '../period'
 import { Figure, Insight, type Tone } from '../components/Insight'
 import { num, pct, tipPct } from '../format'
 
@@ -32,6 +33,7 @@ function verdictClass(verdict: string): string {
 }
 
 export function Research({ asset, strategies }: { asset: string; strategies: StrategyInfo[] }) {
+  const { period, bounds } = usePeriod()
   const [name, setName] = useState('sma_crossover')
   const [rob, setRob] = useState<Robustness | null>(null)
   const [regime, setRegime] = useState<RegimeRow[] | null>(null)
@@ -42,8 +44,8 @@ export function Research({ asset, strategies }: { asset: string; strategies: Str
     setRegime(null)
     setError(null)
     Promise.all([
-      api.robustness(asset, name, DEFAULT_CONFIG),
-      api.regimeAttribution(asset, name),
+      api.robustness(asset, name, DEFAULT_CONFIG, period),
+      api.regimeAttribution(asset, name, period),
     ])
       .then(([r, g]) => {
         setRob(r)
@@ -52,7 +54,7 @@ export function Research({ asset, strategies }: { asset: string; strategies: Str
       .catch((e) => setError(e.message))
   }
 
-  useEffect(load, [asset, name])
+  useEffect(load, [asset, name, period])
 
   const selector = (
     <div className="controls inline">
@@ -157,7 +159,11 @@ export function Research({ asset, strategies }: { asset: string; strategies: Str
         )}
       </Insight>
 
-      <Panel title="Parameter surface" subtitle={`Sharpe across ${p.combinations} parameter combinations`} wide>
+      <Panel
+        title="Parameter surface"
+        subtitle={`${describePeriod(period, bounds)} · Sharpe across ${p.combinations} parameter combinations`}
+        wide
+      >
         {selector}
         <table className="heatmap">
           <thead>

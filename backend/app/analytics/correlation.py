@@ -26,30 +26,55 @@ import pandas as pd
 from ..data.store import load_panel
 
 
-def _returns_panel(keys: tuple[str, ...] | None = None) -> pd.DataFrame:
-    """Aligned simple-return panel for the requested assets."""
-    return load_panel(keys).pct_change().dropna()
+def _returns_panel(
+    keys: tuple[str, ...] | None = None,
+    start: str | None = None,
+    end: str | None = None,
+) -> pd.DataFrame:
+    """Aligned simple-return panel for the requested assets.
+
+    A window is applied to *prices* before returns are taken, so the first bar
+    of the window has no return. Slicing the return series instead would carry
+    in one return computed against a close from outside the window.
+    """
+    panel = load_panel(keys)
+    if start or end:
+        panel = panel.loc[start:end]
+        if panel.empty:
+            raise ValueError(f"no bars between {start or 'start'} and {end or 'end'}")
+    return panel.pct_change().dropna()
 
 
-def sample_size(keys: tuple[str, ...] | None = None) -> int:
+def sample_size(
+    keys: tuple[str, ...] | None = None, start: str | None = None, end: str | None = None
+) -> int:
     """Number of return observations backing a correlation over ``keys``."""
-    return int(len(_returns_panel(keys)))
+    return int(len(_returns_panel(keys, start, end)))
 
 
-def correlation_matrix(keys: tuple[str, ...] | None = None, method: str = "pearson") -> pd.DataFrame:
+def correlation_matrix(
+    keys: tuple[str, ...] | None = None,
+    method: str = "pearson",
+    start: str | None = None,
+    end: str | None = None,
+) -> pd.DataFrame:
     """Static correlation matrix over the common calendar of all ``keys``."""
-    return _returns_panel(keys).corr(method=method)
+    return _returns_panel(keys, start, end).corr(method=method)
 
 
-def covariance_matrix(keys: tuple[str, ...] | None = None) -> pd.DataFrame:
+def covariance_matrix(
+    keys: tuple[str, ...] | None = None, start: str | None = None, end: str | None = None
+) -> pd.DataFrame:
     """Covariance matrix over the common calendar of all ``keys``."""
-    return _returns_panel(keys).cov()
+    return _returns_panel(keys, start, end).cov()
 
 
-def rolling_correlation(a: str, b: str, window: int = 90) -> pd.Series:
+def rolling_correlation(
+    a: str, b: str, window: int = 90, start: str | None = None, end: str | None = None
+) -> pd.Series:
     """Rolling pairwise return correlation, on that pair's own common calendar."""
     a, b = a.upper(), b.upper()
-    rets = _returns_panel((a, b))
+    rets = _returns_panel((a, b), start, end)
     if a == b:
         # Correlating a series with itself is 1 by definition; pandas would
         # return a single column here and the .corr call would misalign.
@@ -57,13 +82,18 @@ def rolling_correlation(a: str, b: str, window: int = 90) -> pd.Series:
     return rets[a].rolling(window, min_periods=window).corr(rets[b]).dropna()
 
 
-def rolling_correlation_all(window: int = 90, keys: tuple[str, ...] | None = None) -> pd.DataFrame:
+def rolling_correlation_all(
+    window: int = 90,
+    keys: tuple[str, ...] | None = None,
+    start: str | None = None,
+    end: str | None = None,
+) -> pd.DataFrame:
     """Every unique pair's rolling correlation, as columns named ``A~B``.
 
     Unlike :func:`rolling_correlation` this uses the common calendar of all
     ``keys``, so the columns are directly comparable against each other.
     """
-    rets = _returns_panel(keys)
+    rets = _returns_panel(keys, start, end)
     cols = list(rets.columns)
     out = {}
     for i, a in enumerate(cols):

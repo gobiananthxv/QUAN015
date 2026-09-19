@@ -18,15 +18,9 @@ import {
   type StrategyInfo,
 } from '../api'
 import { ErrorState, Loading, Note, Panel, Stat } from '../components/Common'
+import { describePeriod, usePeriod } from '../period'
 import { Figure, Insight, type Tone } from '../components/Insight'
 import { int, money, num, pct, tipMoney, STRATEGY_COLORS } from '../format'
-
-/** ISO date n years before today, for the period presets. */
-function isoYearsAgo(n: number): string {
-  const d = new Date()
-  d.setFullYear(d.getFullYear() - n)
-  return d.toISOString().slice(0, 10)
-}
 
 export function Backtest({
   asset,
@@ -38,7 +32,10 @@ export function Backtest({
   const [name, setName] = useState('sma_crossover')
   const [params, setParams] = useState<Record<string, number>>({})
   const [config, setConfig] = useState<BacktestConfig>(DEFAULT_CONFIG)
-  const [period, setPeriod] = useState<Period>({})
+  // The backtesting period the brief asks for *is* the platform period. Two
+  // controls that look alike and mean slightly different things would be worse
+  // than one, so this tab reads the shared value rather than owning its own.
+  const { period, bounds } = usePeriod()
   const [result, setResult] = useState<{ strategy: RunResult; benchmark: RunResult } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -63,22 +60,6 @@ export function Backtest({
 
   const run = () => runWith(params, config, period)
 
-  /** Preset windows. Each is a genuine out-of-sample slice: signals are
-   *  regenerated inside the window rather than trimmed from a full-history run. */
-  const presets: { label: string; period: Period }[] = [
-    { label: 'Full history', period: {} },
-    { label: 'Last 5 years', period: { start: isoYearsAgo(5) } },
-    { label: 'Last 3 years', period: { start: isoYearsAgo(3) } },
-    { label: 'Last 1 year', period: { start: isoYearsAgo(1) } },
-    { label: 'Covid era (2020–2021)', period: { start: '2020-01-01', end: '2021-12-31' } },
-    { label: 'Bear market (2022)', period: { start: '2022-01-01', end: '2022-12-31' } },
-  ]
-
-  const applyPreset = (per: Period) => {
-    setPeriod(per)
-    runWith(params, config, per)
-  }
-
   // Selecting a strategy (or asset) resets to that strategy's defaults and runs.
   useEffect(() => {
     if (!info) return
@@ -86,7 +67,7 @@ export function Backtest({
     setParams(defaults)
     runWith(defaults, config, period)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [asset, name, info])
+  }, [asset, name, info, period])
 
   const strat = result?.strategy
   const bench = result?.benchmark
@@ -215,46 +196,17 @@ export function Backtest({
             </label>
           )}
 
-          <label>
-            from
-            <input
-              type="date"
-              value={period.start ?? ''}
-              onChange={(e) => setPeriod({ ...period, start: e.target.value || undefined })}
-            />
-          </label>
-          <label>
-            to
-            <input
-              type="date"
-              value={period.end ?? ''}
-              onChange={(e) => setPeriod({ ...period, end: e.target.value || undefined })}
-            />
-          </label>
-
           <button className="btn primary" onClick={run} disabled={busy}>
             {busy ? 'Running…' : 'Run backtest'}
           </button>
         </div>
 
-        <div className="presets">
-          <span className="presets-label">Period</span>
-          {presets.map((p) => {
-            const active =
-              (p.period.start ?? '') === (period.start ?? '') &&
-              (p.period.end ?? '') === (period.end ?? '')
-            return (
-              <button
-                key={p.label}
-                className={`chip${active ? ' active' : ''}`}
-                onClick={() => applyPreset(p.period)}
-                disabled={busy}
-              >
-                {p.label}
-              </button>
-            )
-          })}
-        </div>
+        <Note>
+          Running over <strong>{describePeriod(period, bounds)}</strong> — set by
+          the Period bar at the top of the page, or by dragging the Overview
+          chart. Signals are regenerated inside the window, so a sub-period is a
+          genuine out-of-sample run rather than a trimmed full-history one.
+        </Note>
         {info && <Note>{info.description}</Note>}
       </Panel>
 

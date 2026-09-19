@@ -11,6 +11,7 @@ import {
 } from 'recharts'
 import { api, DEFAULT_CONFIG, type RunResult, type StrategyInfo } from '../api'
 import { ErrorState, Loading, Note, Panel } from '../components/Common'
+import { describePeriod, usePeriod } from '../period'
 import { Figure, Insight, type Tone } from '../components/Insight'
 import { money, num, pct, STRATEGY_COLORS, tipMoney } from '../format'
 
@@ -24,6 +25,7 @@ type Result = { asset: string; runs: RunResult[]; benchmark: RunResult }
  * through the same engine and pays the same entry cost.
  */
 export function Compare({ asset, strategies }: { asset: string; strategies: StrategyInfo[] }) {
+  const { period, bounds } = usePeriod()
   const [data, setData] = useState<Result | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [metric, setMetric] = useState<'equity' | 'drawdown'>('equity')
@@ -31,10 +33,10 @@ export function Compare({ asset, strategies }: { asset: string; strategies: Stra
   const load = () => {
     setData(null)
     setError(null)
-    api.compare(asset, DEFAULT_CONFIG).then(setData).catch((e) => setError(e.message))
+    api.compare(asset, DEFAULT_CONFIG, period).then(setData).catch((e) => setError(e.message))
   }
 
-  useEffect(load, [asset])
+  useEffect(load, [asset, period])
 
   if (error) return <ErrorState error={error} onRetry={load} />
   if (!data) return <Loading what="four strategies and the benchmark" />
@@ -106,7 +108,7 @@ export function Compare({ asset, strategies }: { asset: string; strategies: Stra
 
       <Panel
         title={`${asset} — every strategy against buy-and-hold`}
-        subtitle={`$${DEFAULT_CONFIG.initial_capital.toLocaleString()} · ${DEFAULT_CONFIG.commission_bps} bps commission · ${DEFAULT_CONFIG.slippage_bps} bps slippage`}
+        subtitle={`${describePeriod(period, bounds)} · $${DEFAULT_CONFIG.initial_capital.toLocaleString()} · ${DEFAULT_CONFIG.commission_bps} bps commission · ${DEFAULT_CONFIG.slippage_bps} bps slippage`}
         wide
       >
         <div className="controls inline">

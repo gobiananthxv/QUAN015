@@ -21,18 +21,9 @@ import {
   type Trade,
 } from '../api'
 import { ErrorState, Loading, Note, Panel, Stat } from '../components/Common'
+import { usePeriod } from '../period'
 import { Figure, Insight } from '../components/Insight'
 import { int, money, num, pct, tipNum, tipVolume } from '../format'
-
-/** Zoom presets, in trading days. `null` means the whole series. */
-const ZOOMS: { label: string; bars: number | null }[] = [
-  { label: 'All', bars: null },
-  { label: '5Y', bars: 252 * 5 },
-  { label: '3Y', bars: 252 * 3 },
-  { label: '1Y', bars: 252 },
-  { label: '6M', bars: 126 },
-  { label: '3M', bars: 63 },
-]
 
 /**
  * Moving-average periods scaled to the window being viewed.
@@ -82,11 +73,13 @@ type Row = {
 }
 
 export function Overview({ asset }: { asset: string }) {
+  // Dragging the chart sets the platform-wide period, so a selection made here
+  // carries to Risk, Correlation, Backtest, Compare and Research. The chart is
+  // the most natural place to choose a period; it just should not be the only
+  // place that knows about it.
+  const { period, setPeriod } = usePeriod()
   const [rows, setRows] = useState<OhlcBar[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-
-  // Absolute index window into the full series. null = everything.
-  const [range, setRange] = useState<{ start: number; end: number } | null>(null)
 
   // Drag-to-zoom state: the two x-axis labels under the pointer.
   const [dragFrom, setDragFrom] = useState<string | null>(null)
@@ -109,7 +102,6 @@ export function Overview({ asset }: { asset: string }) {
   useEffect(() => {
     setRows(null)
     setError(null)
-    setRange(null)
     setWindowStats(null)
     api
       .indicators(asset, 50, 200, 20, 50)
@@ -132,7 +124,25 @@ export function Overview({ asset }: { asset: string }) {
   }, [rows])
 
   const lastIndex = Math.max(data.length - 1, 0)
-  const view = range ?? { start: 0, end: lastIndex }
+
+  // The index window is derived from the shared period rather than held
+  // separately, so there is exactly one source of truth for "what am I looking
+  // at" and the chart cannot drift from the rest of the platform.
+  const view = useMemo(() => {
+    if (!data.length) return { start: 0, end: 0 }
+    let start = 0
+    let end = data.length - 1
+    if (period.start) {
+      const i = data.findIndex((r) => r.date >= period.start!)
+      if (i >= 0) start = i
+    }
+    if (period.end) {
+      const i = data.findIndex((r) => r.date > period.end!)
+      if (i > 0) end = i - 1
+    }
+    return start < end ? { start, end } : { start: 0, end: data.length - 1 }
+  }, [data, period.start, period.end])
+
   const from = data[view.start]?.date
   const to = data[view.end]?.date
 
@@ -204,21 +214,14 @@ export function Overview({ asset }: { asset: string }) {
       // ignored rather than clamped: silently widening what the user dragged
       // would be worse than doing nothing.
       if (a >= 0 && b >= 0 && Math.abs(b - a) + 1 >= MIN_WINDOW_BARS) {
-        setRange({ start: Math.min(a, b), end: Math.max(a, b) })
+        setPeriod({
+          start: data[Math.min(a, b)].date,
+          end: data[Math.max(a, b)].date,
+        })
       }
     }
     setDragFrom(null)
     setDragTo(null)
-  }
-
-  const zoomTo = (bars: number | null) => {
-    if (bars === null || bars >= data.length) return setRange(null)
-    setRange({ start: Math.max(0, data.length - bars), end: lastIndex })
-  }
-
-  const activeZoom = (bars: number | null) => {
-    const span = view.end - view.start + 1
-    return bars === null ? span === data.length : span === bars && view.end === lastIndex
   }
 
   // Markers come from the window's own backtest, so they are real fills for
@@ -263,14 +266,14 @@ export function Overview({ asset }: { asset: string }) {
         headline={
           <>
             {asset} multiplied <Figure value={`${growth.toFixed(1)}×`} /> over{' '}
-            {years.toFixed(0)} years. Drag across the chart to zoom into any
-            period — every figure below recomputes for what you select.
+            {years.toFixed(0)} years. Drag across the chart to set the analysis
+            period — every tab recomputes for what you select.
           </>
         }
       >
         Signal periods scale with the window, so there are always buy and sell
         fills to inspect. Headline growth above stays fixed to the full history;
-        everything under the chart follows your selection.
+        everything else — here and on every other tab — follows your selection.
       </Insight>
 
       <Panel
@@ -279,25 +282,6 @@ export function Overview({ asset }: { asset: string }) {
         wide
       >
         <div className="chart-toolbar">
-          <div className="presets">
-            <span className="presets-label">Zoom</span>
-            {ZOOMS.map((z) => (
-              <button
-                key={z.label}
-                className={`chip${activeZoom(z.bars) ? ' active' : ''}`}
-                onClick={() => zoomTo(z.bars)}
-                disabled={z.bars !== null && z.bars >= data.length}
-              >
-                {z.label}
-              </button>
-            ))}
-            {zoomed && (
-              <button className="chip reset" onClick={() => setRange(null)}>
-                ✕ reset
-              </button>
-            )}
-          </div>
-
           <div className="window-stats">
             <span><em>{from}</em> → <em>{to}</em></span>
             <span className="databar-sep">·</span>
@@ -374,13 +358,14 @@ export function Overview({ asset }: { asset: string }) {
         </ResponsiveContainer>
 
         <Note>
-          <strong>Drag across the chart</strong> in either direction to zoom into
-          a period, or use the buttons above. {zoomed ? 'Press ✕ reset to go back. ' : ''}
-          Selections narrower than {MIN_WINDOW_BARS} bars are ignored — below
-          about a trading month the signal warm-up leaves no markers and
-          annualised statistics stop meaning anything. Signal periods scale to
-          the window: at this width the markers come from an SMA {shown.fast}/
-          {shown.slow} crossover. Log scale throughout.
+          <strong>Drag across the chart</strong> in either direction to set the
+          period — it applies to every tab, not just this chart. Use the Period
+          bar at the top to reset or pick a preset. Selections narrower than{' '}
+          {MIN_WINDOW_BARS} bars are ignored: below about a trading month the
+          signal warm-up leaves no markers and annualised statistics stop
+          meaning anything. Signal periods scale to the window — at this width
+          the markers come from an SMA {shown.fast}/{shown.slow} crossover. Log
+          scale throughout.
         </Note>
       </Panel>
 

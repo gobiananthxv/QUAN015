@@ -12,6 +12,7 @@ import {
   YAxis,
 } from 'recharts'
 import { api, type Summary } from '../api'
+import { describePeriod, usePeriod } from '../period'
 import { ErrorState, Loading, Note, Panel, Stat } from '../components/Common'
 import { Figure, Insight } from '../components/Insight'
 import { int, num, pct, tipPct } from '../format'
@@ -19,6 +20,7 @@ import { int, num, pct, tipPct } from '../format'
 type Point = { date: string; value: number | null }
 
 export function Risk({ asset }: { asset: string }) {
+  const { period, bounds } = usePeriod()
   const [data, setData] = useState<{
     summary: Summary
     annFactor: number
@@ -34,7 +36,7 @@ export function Risk({ asset }: { asset: string }) {
     setData(null)
     setError(null)
     api
-      .metrics(asset)
+      .metrics(asset, period)
       .then((m) =>
         setData({
           summary: m.summary,
@@ -49,7 +51,7 @@ export function Risk({ asset }: { asset: string }) {
       .catch((e) => setError(e.message))
   }
 
-  useEffect(load, [asset])
+  useEffect(load, [asset, period])
 
   if (error) return <ErrorState error={error} onRetry={load} />
   if (!data) return <Loading what="risk metrics" />
@@ -85,7 +87,7 @@ export function Risk({ asset }: { asset: string }) {
 
       <Panel
         title={`${asset} — buy and hold`}
-        subtitle={`Annualised using ${data.annFactor} periods per year`}
+        subtitle={`${describePeriod(period, bounds)} · annualised using ${data.annFactor} periods per year`}
         wide
       >
         <div className="stats">

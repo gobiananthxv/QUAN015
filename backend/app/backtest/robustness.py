@@ -91,6 +91,8 @@ def parameter_sweep(
     strategy_name: str,
     grid: dict[str, list],
     config: BacktestConfig | None = None,
+    start: str | None = None,
+    end: str | None = None,
 ) -> pd.DataFrame:
     """Backtest every combination in ``grid``.
 
@@ -101,6 +103,8 @@ def parameter_sweep(
     """
     asset = get_asset(asset).key
     df = load_asset(asset)
+    if start or end:
+        df = window(df, start, end)
     names = list(grid)
     rows: list[dict] = []
 
@@ -255,6 +259,8 @@ def cost_sweep(
     params: dict | None = None,
     bps_levels: tuple[float, ...] = (0.0, 5.0, 10.0, 25.0, 50.0, 100.0),
     config: BacktestConfig | None = None,
+    start: str | None = None,
+    end: str | None = None,
 ) -> pd.DataFrame:
     """How the result decays as friction rises. A strategy that only works at
     zero cost is an artefact of the data, not an edge."""
@@ -262,7 +268,7 @@ def cost_sweep(
     rows = []
     for bps in bps_levels:
         cfg = replace(base, commission_bps=bps, slippage_bps=bps / 2)
-        stats = run_strategy(asset, strategy_name, params, cfg).stats()
+        stats = run_strategy(asset, strategy_name, params, cfg, start=start, end=end).stats()
         rows.append(
             {"bps_per_side": bps, **{k: stats[k] for k in SWEEP_METRICS}}
         )
@@ -275,6 +281,8 @@ def period_sweep(
     params: dict | None = None,
     n_windows: int = 5,
     config: BacktestConfig | None = None,
+    start: str | None = None,
+    end: str | None = None,
 ) -> pd.DataFrame:
     """Split the history into consecutive windows and backtest each separately.
 
@@ -284,6 +292,8 @@ def period_sweep(
     """
     asset = get_asset(asset).key
     df = load_asset(asset)
+    if start or end:
+        df = window(df, start, end)
     strat = get_strategy(strategy_name, params)
     bounds = np.linspace(0, len(df), n_windows + 1).astype(int)
 
@@ -330,6 +340,8 @@ def regime_attribution(
     strategy_name: str,
     params: dict | None = None,
     config: BacktestConfig | None = None,
+    start: str | None = None,
+    end: str | None = None,
 ) -> list[dict]:
     """Slice a strategy's returns by market regime, against the benchmark.
 
@@ -345,9 +357,16 @@ def regime_attribution(
     asset = get_asset(asset).key
     ann = get_asset(asset).ann_factor
     df = load_asset(asset)
+    if start or end:
+        df = window(df, start, end)
 
     res = run_strategy(asset, strategy_name, params, config, df=df)
     bench = buy_and_hold(df, asset, config=config)
+    # Regime labels are computed on the FULL history deliberately: the trend
+    # and volatility thresholds at a given bar depend on what came before it,
+    # and recomputing them from the window's own start would relabel bars
+    # according to a history that did not happen. The join below restricts them
+    # to the window.
     reg = classify(asset)
 
     joined = pd.DataFrame(

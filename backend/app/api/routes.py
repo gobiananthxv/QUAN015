@@ -102,6 +102,8 @@ class RobustnessIn(BaseModel):
     strategy: str
     grid: dict[str, list] = Field(default_factory=dict)
     config: ConfigIn = Field(default_factory=ConfigIn)
+    start: str | None = None
+    end: str | None = None
 
 
 # ---------------------------------------------------------------- helpers
@@ -278,13 +280,27 @@ def get_metrics(
 
 
 @router.get("/correlation")
-def get_correlation(window: int = Query(90, ge=10, le=750)) -> dict:
-    matrix = correlation_matrix()
-    rolling = rolling_correlation_all(window)
+def get_correlation(
+    window: int = Query(90, ge=10, le=750),
+    start: str | None = None,
+    end: str | None = None,
+) -> dict:
+    """Correlation over the whole history, or over ``start``/``end``.
+
+    Worth restricting: GOLD~NVDA correlates 0.044 across the decade but 0.245
+    through 2020. A single figure averages regimes that never coexisted.
+    """
+    try:
+        matrix = correlation_matrix(start=start, end=end)
+        rolling = rolling_correlation_all(window, start=start, end=end)
+        observations = sample_size(start=start, end=end)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
     return clean(
         {
             "assets": list(matrix.columns),
-            "observations": sample_size(),
+            "observations": observations,
+            "period": {"start": start, "end": end},
             "matrix": [
                 {"a": a, "b": b, "value": matrix.loc[a, b]}
                 for a in matrix.index
@@ -297,19 +313,38 @@ def get_correlation(window: int = Query(90, ge=10, le=750)) -> dict:
 
 
 @router.get("/rolling-correlation")
-def get_rolling_correlation(a: str, b: str, window: int = Query(90, ge=10, le=750)) -> dict:
+def get_rolling_correlation(
+    a: str,
+    b: str,
+    window: int = Query(90, ge=10, le=750),
+    start: str | None = None,
+    end: str | None = None,
+) -> dict:
     key_a, key_b = _asset_or_404(a), _asset_or_404(b)
-    series = rolling_correlation(key_a, key_b, window)
+    try:
+        series = rolling_correlation(key_a, key_b, window, start=start, end=end)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
     return clean(
         {"a": key_a, "b": key_b, "window": window, "series": series_to_pairs(series, "corr")}
     )
 
 
 @router.get("/regime")
-def get_regime(asset: str) -> dict:
-    """Regime labels over time, for shading the price chart."""
+def get_regime(asset: str, start: str | None = None, end: str | None = None) -> dict:
+    """Regime labels over time, for shading the price chart.
+
+    Labels are always computed on the full history and then sliced. Their
+    thresholds are expanding — what counts as "high volatility" at a given bar
+    depends on everything before it — so recomputing from a window's own start
+    would relabel bars according to a history that did not happen.
+    """
     key = _asset_or_404(asset)
     reg = classify(key)
+    if start or end:
+        reg = reg.loc[start:end]
+        if reg.empty:
+            raise HTTPException(422, f"no bars between {start or 'start'} and {end or 'end'}")
     return clean(
         {
             "asset": key,
@@ -405,7 +440,9 @@ def post_robustness(body: RobustnessIn) -> dict:
         raise HTTPException(422, "grid must contain exactly two parameters")
 
     try:
-        sweep = parameter_sweep(key, body.strategy, grid, config=cfg)
+        sweep = parameter_sweep(key, body.strategy, grid, config=cfg, start=body.start, end=body.end)
+        costs = cost_sweep(key, body.strategy, config=cfg, start=body.start, end=body.end)
+        periods = period_sweep(key, body.strategy, config=cfg, start=body.start, end=body.end)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
 
@@ -422,18 +459,27 @@ def post_robustness(body: RobustnessIn) -> dict:
             ],
             "sweep": frame_to_records(sweep),
             "plateau": plateau_report(sweep, axes),
-            "costs": frame_to_records(cost_sweep(key, body.strategy, config=cfg)),
-            "periods": frame_to_records(period_sweep(key, body.strategy, config=cfg)),
+            "costs": frame_to_records(costs),
+            "periods": frame_to_records(periods),
+            "period": {"start": body.start, "end": body.end},
         }
     )
 
 
 @router.get("/backtest/regime-attribution")
-def get_regime_attribution(asset: str, strategy: str) -> dict:
+def get_regime_attribution(
+    asset: str, strategy: str, start: str | None = None, end: str | None = None
+) -> dict:
     """Where a strategy beats the benchmark, and at what exposure."""
     key = _asset_or_404(asset)
     _strategy_or_404(strategy)
-    return clean({"asset": key, "strategy": strategy, "rows": regime_attribution(key, strategy)})
+    try:
+        rows = regime_attribution(key, strategy, start=start, end=end)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return clean(
+        {"asset": key, "strategy": strategy, "rows": rows, "period": {"start": start, "end": end}}
+    )
 
 
 DEFAULT_GRIDS = {
