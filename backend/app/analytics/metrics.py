@@ -13,6 +13,11 @@ from ..config import RISK_FREE_RATE
 
 TRADING_DAYS = 252
 
+# Dispersion below this is float noise, not real volatility. A genuinely
+# constant return series has std ~1e-18 rather than exactly 0.0, so an
+# `== 0` guard silently divides by it and reports a Sharpe around 1e17.
+ZERO_TOL = 1e-12
+
 
 def daily_returns(prices: pd.Series) -> pd.Series:
     return prices.pct_change().dropna()
@@ -44,6 +49,8 @@ def volatility(returns: pd.Series, ann_factor: int = TRADING_DAYS, annualise: bo
     if len(returns) < 2:
         return 0.0
     sd = float(returns.std(ddof=1))
+    if sd < ZERO_TOL:
+        sd = 0.0
     return sd * np.sqrt(ann_factor) if annualise else sd
 
 
@@ -58,7 +65,7 @@ def sharpe_ratio(returns: pd.Series, ann_factor: int = TRADING_DAYS, rf: float =
     rf_per_bar = (1 + rf) ** (1 / ann_factor) - 1
     excess = returns - rf_per_bar
     sd = float(excess.std(ddof=1))
-    if sd == 0:
+    if not np.isfinite(sd) or sd < ZERO_TOL:
         return 0.0
     return float(excess.mean() / sd * np.sqrt(ann_factor))
 
@@ -76,7 +83,7 @@ def sortino_ratio(returns: pd.Series, ann_factor: int = TRADING_DAYS, rf: float 
         # "no risk-adjusted return", the opposite of the truth.
         return float("inf") if excess.mean() > 0 else 0.0
     dd = float(np.sqrt((downside ** 2).mean()))
-    if dd == 0:
+    if not np.isfinite(dd) or dd < ZERO_TOL:
         return float("inf") if excess.mean() > 0 else 0.0
     return float(excess.mean() / dd * np.sqrt(ann_factor))
 
@@ -109,7 +116,7 @@ def max_drawdown_duration(returns: pd.Series) -> int:
 
 def calmar_ratio(returns: pd.Series, ann_factor: int = TRADING_DAYS) -> float:
     mdd = abs(max_drawdown(returns))
-    if mdd == 0:
+    if mdd < ZERO_TOL:
         return 0.0
     return float(cagr(returns, ann_factor) / mdd)
 

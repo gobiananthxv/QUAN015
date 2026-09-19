@@ -19,7 +19,7 @@ against a buy-and-hold benchmark with realistic execution costs.
 |---|---|---|
 | 0 | Scaffold | ✅ Complete |
 | 1 | Data pipeline | ✅ Complete |
-| 2 | Analytics engine | 🔨 Drafted, verification pending |
+| 2 | Analytics engine | ✅ Complete (90 tests) |
 | 3 | Backtesting engine | ⬜ Pending |
 | 4 | Strategies | ⬜ Pending |
 | 5 | Regime + robustness | ⬜ Pending |
@@ -27,6 +27,35 @@ against a buy-and-hold benchmark with realistic execution costs.
 | 7 | Tests, docs, demo | ⬜ Pending |
 
 Full phase breakdown and decision log: [`PROJECT_PLAN.md`](PROJECT_PLAN.md).
+
+```bash
+cd backend && ./.venv/Scripts/python.exe -m pytest tests/ -q
+```
+
+---
+
+## What the engine finds
+
+Buy-and-hold over the full history, using each asset's own annualisation factor:
+
+| Asset | Total | CAGR | Volatility | Sharpe | Max DD | Longest DD |
+|---|---|---|---|---|---|---|
+| GOLD | 236.9% | 12.95% | 16.95% | 0.69 | −24.9% | 836 d |
+| BTC | 13,236% | 63.07% | 66.81% | 1.04 | −83.4% | 1,079 d |
+| NVDA | 14,130% | 64.41% | 50.05% | 1.20 | −66.3% | 373 d |
+
+Daily-return correlation is low across all three pairs (GOLD~BTC 0.10,
+GOLD~NVDA 0.04, BTC~NVDA 0.22) — but the *rolling* 90-day figure swings through
+a range of 0.80 to 0.98 depending on the pair. Correlation is not a constant,
+which is the entire reason the rolling view exists.
+
+Regime attribution separates the assets sharply. NVDA compounds at 124% a year
+in bull regimes and −60% in bear ones; BTC at 323% versus −57%. Reproduce any
+of this with:
+
+```bash
+cd backend && ./.venv/Scripts/python.exe scripts/analytics_report.py
+```
 
 ---
 
@@ -84,8 +113,10 @@ backend/
       correlation.py     Correlation matrix, covariance, rolling correlation
       regime.py          Bull/bear + volatility regime classification
   data_cache/            Committed CSV market data
+  tests/                 90 tests: hand-computed values + causality proofs
   scripts/
     bootstrap_data.py    Fetch, validate, cache, self-check
+    analytics_report.py  Real-data sweep with plausibility checks
 docs/
   problem-statement.pdf
   PROJECT_PLAN_FIN_original.md
@@ -99,7 +130,7 @@ is importable and testable without a running server.
 
 ## Design notes
 
-Three decisions that materially affect correctness.
+Four decisions that materially affect correctness.
 
 **Per-asset annualisation.** Bitcoin trades 365 days a year; gold futures and
 NVIDIA do not. The annualisation factor is a property of the asset, never a
@@ -109,6 +140,14 @@ hard-coded 252. Using 252 for crypto understates its volatility by roughly 20%.
 inner join of trading calendars, not a forward fill. Forward-filling equities
 across weekends — where BTC keeps trading — injects bars that are flat by
 construction and drags measured correlation toward zero.
+
+**Expanding, not full-sample, regime thresholds.** Volatility terciles at bar
+*t* are computed from history up to *t* only, so a 2016 bar is never labelled
+using 2020 information. A visible consequence: regime shares are not an even
+33/33/33 split. Gold sits in `high_vol` 52.7% of the time because its volatility
+trended up over the decade, while BTC sits in `low_vol` 46.9% because its
+trended down. Full-sample terciles would force an even split and erase exactly
+that signal.
 
 **Split adjustment across all OHLC fields.** The adjustment factor derived from
 the adjusted close is applied to open, high and low as well. Adjusting only the

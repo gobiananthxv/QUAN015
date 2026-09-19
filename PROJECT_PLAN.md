@@ -28,13 +28,13 @@ Every requirement from the problem statement, mapped to where it is delivered.
 | # | Problem-statement requirement | Phase | Status |
 |---|---|---|---|
 | 1 | Multi-asset data collection & normalisation | 1 | ✅ Done |
-| 2 | SMA, EMA | 2 | 🔨 Drafted |
-| 3 | Daily & cumulative returns | 2 | 🔨 Drafted |
-| 4 | Historical & annualised volatility | 2 | 🔨 Drafted |
-| 5 | Sharpe ratio | 2 | 🔨 Drafted |
-| 6 | Maximum drawdown | 2 | 🔨 Drafted |
-| 7 | Rolling returns | 2 | 🔨 Drafted |
-| 8 | Correlation matrix + rolling correlation | 2 | 🔨 Drafted |
+| 2 | SMA, EMA | 2 | ✅ Done |
+| 3 | Daily & cumulative returns | 2 | ✅ Done |
+| 4 | Historical & annualised volatility | 2 | ✅ Done |
+| 5 | Sharpe ratio | 2 | ✅ Done |
+| 6 | Maximum drawdown | 2 | ✅ Done |
+| 7 | Rolling returns | 2 | ✅ Done |
+| 8 | Correlation matrix + rolling correlation | 2 | ✅ Done |
 | 9 | Strategy engine: SMA Crossover | 4 | ⬜ Pending |
 | 10 | Strategy engine: EMA Trend | 4 | ⬜ Pending |
 | 11 | Strategy engine: Momentum | 4 | ⬜ Pending |
@@ -42,7 +42,7 @@ Every requirement from the problem statement, mapped to where it is delivered.
 | 13 | Realistic simulation: initial capital, position sizing, transaction costs, entry/exit prices, portfolio value, trade count | 3 | ⬜ Pending |
 | 14 | Strategy vs Buy-and-Hold benchmark | 3 | ⬜ Pending |
 | 15 | Robustness testing (parameter / cost / period sweeps) | 5 | ⬜ Pending |
-| 16 | Market regime analysis (bull / bear / high-vol / low-vol) | 5 | 🔨 Drafted |
+| 16 | Market regime analysis (bull / bear / high-vol / low-vol) | 5 | ✅ Done |
 | 17 | Dashboard: prices, SMA/EMA, returns & volatility, drawdowns, correlation heatmap, buy/sell signals, equity curves, strategy vs benchmark | 6 | ⬜ Pending |
 | 18 | Bias minimisation: look-ahead, data leakage, unrealistic execution, over-optimisation | 3 + 7 | ⬜ Pending |
 | 19 | "Not a guarantee of future returns" disclaimer | 7 | ⬜ Pending |
@@ -124,7 +124,7 @@ Fetch → validate → cache → align.
 **Delivered:** GOLD 2,514 rows · BTC 3,653 · NVDA 2,514, all 2016-09-19 → 2026-09-18/19.
 Aligned panel: 2,511 common trading days.
 
-### Phase 2 — Analytics engine · 3 h · 🔨 CODE DRAFTED, NOT VERIFIED
+### Phase 2 — Analytics engine · 3 h · ✅ COMPLETE
 - **Indicators** (`indicators.py`): SMA, EMA, RSI, MACD, Bollinger (+ z-score), ATR, ROC.
 - **Metrics** (`metrics.py`): daily/cumulative/rolling returns, historical &
   annualised volatility, Sharpe, Sortino, Calmar, max drawdown, drawdown
@@ -132,12 +132,14 @@ Aligned panel: 2,511 common trading days.
 - **Correlation** (`correlation.py`): static matrix, covariance, rolling pairwise.
 - **Regime** (`regime.py`): trend (200-SMA) and volatility (expanding terciles) labels.
 
-**Verification gate:**
-1. Indicators vs hand-computed values on a known series.
-2. Metrics vs closed-form cases (constant-return Sharpe, hand-built drawdown path, CAGR round-trip).
-3. **Causality test** — appending future bars must not change any past indicator value. The backtester's correctness depends on this.
-4. Per-asset annualisation actually differs (BTC 365 vs NVDA 252).
-5. Full sweep over all three real assets; metric table reviewed for sanity.
+**Verification gate — passed.** 90 tests, all green:
+1. ✅ Indicators vs hand-computed values (EMA recursion, Bollinger population std, Wilder ATR, ROC).
+2. ✅ Metrics vs closed-form cases (compounding, CAGR doubling, Sharpe by formula, hand-built drawdown path).
+3. ✅ **Causality** — 10 parametrised tests confirm no indicator's past value changes when future bars are appended, plus the same test for regime labels.
+4. ✅ Per-asset annualisation confirmed to scale by √(365/252).
+5. ✅ Real-data sweep via `scripts/analytics_report.py`, exit 0.
+
+Run with `pytest tests/ -q` and `python scripts/analytics_report.py`.
 
 ### Phase 3 — Backtesting engine · 3.5 h · ⬜ PENDING
 The core of the project. Explicit bar-by-bar loop, not vectorised — slower, but
@@ -227,6 +229,19 @@ value of its then-$62 price.
 **D5 — CSV cache committed to the repository.**
 The demo must not depend on venue wifi or on Yahoo being reachable.
 
+**D6 — Two correlation sample policies, deliberately (Phase 2).**
+The correlation *matrix* uses the intersection of all assets' calendars, because
+a matrix built from different per-pair samples is not internally consistent.
+*Pairwise rolling* correlation uses just that pair's calendar, which yields more
+observations and a better estimate. The two therefore rest on slightly different
+samples (2,514 vs 2,511 rows for GOLD/NVDA). `sample_size()` reports the sample
+actually used, so the difference is visible rather than silent.
+
+**D7 — Float tolerance on every zero-division guard (Phase 2).**
+A genuinely constant return series has a standard deviation of ~1e-18, not 0.0.
+An `== 0` guard lets that through and divides by it. Guards now compare against
+`ZERO_TOL = 1e-12`.
+
 ---
 
 ## 7. Known data-quality notes
@@ -238,6 +253,12 @@ The demo must not depend on venue wifi or on Yahoo being reachable.
 - **BTC retains 69% of its rows** after calendar alignment. Expected — weekends
   are removed so cross-asset comparisons are like-for-like. Single-asset BTC
   analysis still uses the full 3,653-row series.
+- **Volatility-regime shares are not 33/33/33, and should not be.** Gold spends
+  52.7% of its labelled history in `high_vol` while BTC spends 46.9% in
+  `low_vol`. This is the expanding-quantile design working as intended: gold's
+  volatility trended *up* over the decade, so later bars exceed their own
+  historical terciles, while BTC's trended *down*. Full-sample terciles would
+  force an even split and destroy exactly this information.
 
 ---
 
@@ -247,7 +268,7 @@ Realistic targets for a 24-hour build, replacing the original plan's
 production SLOs.
 
 - ✅ 10 years of validated history for 3 assets across 3 asset classes
-- ⬜ All 7 required indicator/metric families computed and displayed
+- ✅ All 7 required indicator/metric families computed and verified
 - ⬜ 4 strategies backtested with costs, sizing and a like-for-like benchmark
 - ⬜ Look-ahead bias structurally prevented **and** proven by a regression test
 - ⬜ Regime attribution and a robustness surface, both visualised
