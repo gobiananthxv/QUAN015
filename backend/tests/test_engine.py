@@ -386,3 +386,137 @@ def test_config_is_echoed_in_the_result():
     res = run_backtest(df, sig([0] * 5, df), "GOLD", config=cfg)
     assert res.config.as_dict()["initial_capital"] == 77_000.0
     assert res.stats()["initial_capital"] == 77_000.0
+
+
+# ================================================================ borrow cost
+
+
+def test_holding_a_short_costs_borrow_every_bar():
+    """Regression: a short used to be free to hold.
+
+    A real short pays a borrow fee for as long as it is open. Without this, a
+    short could be held for a decade at no cost, which flatters every
+    short-side result.
+    """
+    cfg = BacktestConfig(
+        initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+        allow_short=True, borrow_bps_annual=50.0,
+    )
+    df = frame(opens=[100.0] * 260, closes=[100.0] * 260)
+    res = run_backtest(df, sig([-1.0] * 260, df), "GOLD", config=cfg)
+
+    assert res.stats()["total_borrow"] > 0
+    assert res.equity.iloc[-1] < 10_000.0, "a flat-price short must still lose the borrow"
+
+
+def test_borrow_is_zero_when_never_short():
+    cfg = BacktestConfig(commission_bps=0.0, slippage_bps=0.0, borrow_bps_annual=500.0)
+    df = frame(opens=[100.0] * 50, closes=[100.0] * 50)
+    res = run_backtest(df, sig([1.0] * 50, df), "GOLD", config=cfg)
+    assert res.stats()["total_borrow"] == 0.0
+
+
+def test_borrow_scales_with_the_rate():
+    df = frame(opens=[100.0] * 260, closes=[100.0] * 260)
+
+    def paid(bps):
+        cfg = BacktestConfig(
+            initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+            allow_short=True, borrow_bps_annual=bps,
+        )
+        return run_backtest(df, sig([-1.0] * 260, df), "GOLD", config=cfg).stats()["total_borrow"]
+
+    assert paid(0.0) == 0.0
+    assert paid(200.0) == pytest.approx(paid(50.0) * 4, rel=0.02)
+
+
+def test_borrow_uses_the_assets_own_calendar():
+    """A crypto short (365 bars/year) must not be charged an equity year's worth
+    of borrow for the same number of bars."""
+    df = frame(opens=[100.0] * 260, closes=[100.0] * 260)
+    cfg = BacktestConfig(
+        initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0,
+        allow_short=True, borrow_bps_annual=100.0,
+    )
+    gold = run_backtest(df, sig([-1.0] * 260, df), "GOLD", config=cfg).stats()["total_borrow"]
+    btc = run_backtest(df, sig([-1.0] * 260, df), "BTC", config=cfg).stats()["total_borrow"]
+    assert btc < gold, "365-day calendar means a smaller per-bar charge"
+    assert btc == pytest.approx(gold * 252 / 365, rel=0.01)
+
+
+def test_costs_still_decompose_with_borrow_included():
+    cfg = BacktestConfig(
+        initial_capital=10_000.0, commission_bps=10.0, slippage_bps=5.0,
+        allow_short=True, borrow_bps_annual=100.0,
+    )
+    df = frame(opens=[100.0] * 120, closes=[100.0] * 120)
+    res = run_backtest(df, sig([-1.0] * 60 + [0.0] * 60, df), "GOLD", config=cfg)
+    t = res.trades[0]
+    assert t.costs == pytest.approx(t.commission + t.slippage + t.borrow)
+    stats = res.stats()
+    assert stats["total_costs"] == pytest.approx(
+        stats["total_commission"] + stats["total_slippage"] + stats["total_borrow"]
+    )
+
+
+# ================================================================ position sizing
+
+
+def test_position_size_leaves_the_rest_in_cash():
+    """The brief lists position sizing as a required control, so prove it bites."""
+    df = frame(opens=[100.0] * 6, closes=[100.0, 100.0, 200.0, 200.0, 200.0, 200.0])
+    for pct_, expected_units in ((0.25, 25.0), (0.5, 50.0), (1.0, 100.0)):
+        cfg = BacktestConfig(
+            initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0, position_pct=pct_
+        )
+        res = run_backtest(df, sig([1.0] * 6, df), "GOLD", config=cfg)
+        assert res.trades[0].units == pytest.approx(expected_units)
+
+
+def test_smaller_position_size_dampens_both_gain_and_loss():
+    df = frame(opens=[100.0] * 6, closes=[100.0, 100.0, 200.0, 200.0, 200.0, 200.0])
+
+    def final(p):
+        cfg = BacktestConfig(
+            initial_capital=10_000.0, commission_bps=0.0, slippage_bps=0.0, position_pct=p
+        )
+        return run_backtest(df, sig([1.0] * 6, df), "GOLD", config=cfg).equity.iloc[-1]
+
+    # Price doubles: 100% deployed doubles equity, 50% adds half of that gain.
+    assert final(1.0) == pytest.approx(20_000.0)
+    assert final(0.5) == pytest.approx(15_000.0)
+    assert final(0.25) == pytest.approx(12_500.0)
+
+
+def test_benchmark_is_always_fully_invested():
+    """Regression: the benchmark used to inherit the strategy's position size.
+
+    Halving `position_pct` halved buy-and-hold too, so a strategy could be
+    de-risked and never look any worse — the yardstick shrank with it. A
+    benchmark that moves when you change a strategy setting is not a reference.
+    """
+    df = load_asset("NVDA")
+    full = buy_and_hold(df, "NVDA", BacktestConfig(position_pct=1.0)).stats()["total_return"]
+    for p in (0.25, 0.5, 0.75):
+        sized = buy_and_hold(df, "NVDA", BacktestConfig(position_pct=p)).stats()["total_return"]
+        assert sized == pytest.approx(full), f"benchmark moved at position_pct={p}"
+
+
+def test_benchmark_still_pays_the_callers_costs():
+    """Pinning the size must not also pin the costs — like-for-like cost
+    treatment is what makes the comparison fair."""
+    df = load_asset("GOLD")
+    cheap = buy_and_hold(df, "GOLD", BacktestConfig(position_pct=0.4, commission_bps=1.0, slippage_bps=0.0))
+    dear = buy_and_hold(df, "GOLD", BacktestConfig(position_pct=0.4, commission_bps=100.0, slippage_bps=50.0))
+    assert dear.stats()["total_costs"] > cheap.stats()["total_costs"] * 10
+
+
+def test_sizing_a_strategy_down_makes_it_lose_more_to_the_benchmark():
+    """The behaviour the fix exists to produce: smaller size, same yardstick."""
+    df = load_asset("NVDA")
+    bench = buy_and_hold(df, "NVDA").stats()["total_return"]
+    signals = pd.Series(1.0, index=df.index)
+
+    full = run_backtest(df, signals, "NVDA", config=BacktestConfig(position_pct=1.0))
+    half = run_backtest(df, signals, "NVDA", config=BacktestConfig(position_pct=0.5))
+    assert half.stats()["total_return"] < full.stats()["total_return"] < bench * 1.01

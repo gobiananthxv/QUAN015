@@ -335,6 +335,27 @@ equity, and counted separately as `num_open_trades`, so `num_trades` means
 *completed round trips*. Buy-and-hold therefore reports 0 trades and 1 open
 position, which is literally what it does.
 
+**D27 — Shorts pay a borrow fee (post-Phase 7).**
+`allow_short` existed but holding a short cost nothing: a 300-bar short on a
+flat price finished at exactly its starting equity. Real shorts pay borrow for
+every day they are open. `borrow_bps_annual` (default 50 bps, a typical
+easy-to-borrow rate) is charged per bar on the position's current notional and
+de-annualised with the *asset's own* calendar, so a crypto short is not billed
+an equity year's worth of days.
+
+**D28 — The benchmark is always fully invested (post-Phase 7).**
+Exposing `position_pct` in the UI surfaced a real bug: buy-and-hold inherited
+it, so halving the strategy's size halved the benchmark too and the strategy
+never looked any worse — the yardstick shrank with it. Buy-and-hold now pins
+`position_pct` to 1.0 while still paying the caller's commission and slippage,
+so the cost treatment stays like-for-like and the reference stays fixed.
+
+**D29 — Both servers hot-reload (post-Phase 7).**
+Three separate debugging detours traced back to the API serving stale code
+while returning 200. The dashboard already hot-reloaded; the API now does too,
+and the run scripts refuse to start on an occupied port. The two together make
+"am I looking at my change?" answerable.
+
 **D24 — Refresh reasons in days, because the data is daily (post-Phase 7).**
 The provider publishes one bar per day, so re-downloading more often cannot
 produce a different result — it spends a network round trip rewriting identical

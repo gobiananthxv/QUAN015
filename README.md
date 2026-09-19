@@ -32,7 +32,7 @@ every result for the four ways backtests normally lie.
 | [DEMO.md](DEMO.md) | A scripted three-minute walkthrough |
 | [PROJECT_PLAN.md](PROJECT_PLAN.md) | Phase plan and full decision log |
 
-**Status:** all seven phases complete · **281 tests passing** · all 19
+**Status:** all seven phases complete · **294 tests passing** · all 19
 problem-statement requirements delivered.
 
 ---
@@ -171,8 +171,9 @@ Six views. Each answers one question.
 
 ### 1 · Overview — *what has this asset done?*
 
-Log-scale price with SMA 50/200 overlaid, volume, and green bands marking the
-periods a crossover strategy would have held a position.
+Log-scale price with SMA 50/200 and EMA 50 overlaid, volume, green bands marking
+the periods a crossover strategy held a position, and green/red triangles at its
+**actual buy and sell fills** — taken from the trade log, not re-derived.
 
 Log scale matters: on a linear axis, a decade of NVIDIA compresses its first
 eight years into a flat line against the last two.
@@ -180,8 +181,12 @@ eight years into a flat line against the last two.
 ### 2 · Risk — *how much pain did that involve?*
 
 Sharpe, Sortino, Calmar, volatility, maximum drawdown and how long it lasted —
-plus the cumulative return, the underwater drawdown curve, and rolling
-volatility.
+plus the cumulative return, the underwater drawdown curve, **rolling 1-year
+returns** and rolling volatility.
+
+The rolling-return panel is the one that changes minds: buying NVIDIA and
+holding a year returned **+305%** at the best entry date and **−55%** at the
+worst. A single total-return figure hides that entirely.
 
 ### 3 · Correlation — *do these assets actually diversify each other?*
 
@@ -200,7 +205,13 @@ the window, so a sub-period is a genuine out-of-sample run rather than a trimmed
 full-history one, and the benchmark is restricted to the same window. You get the equity curve against buy-and-hold, a full metric
 comparison, and a complete trade log — entry, exit, size, gross P&L, costs, net.
 
-Both the strategy and the benchmark pay the same costs.
+Controls cover every item the brief lists under *Realistic Trading Simulation*:
+initial capital, **position sizing**, commission, slippage, and — when shorts are
+enabled — a borrow fee charged for every bar the short is held.
+
+Both the strategy and the benchmark pay the same costs. The benchmark is
+**always fully invested**, whatever position size the strategy uses: a yardstick
+that shrank with your settings would not be a reference point.
 
 ### 5 · Compare — *which strategy is best on this asset?*
 
@@ -235,7 +246,7 @@ That is a deliberate trade, and the reasons are in priority order:
 | **Reproducibility** | A backtest must give the same answer today and next week. If the underlying prices moved between runs, every reported figure would drift and the tests asserting exact values would fail daily. |
 | **Availability** | The platform works with no internet connection at all. |
 | **Speed** | ~14 ms from disk against ~500 ms over the network — and the Research tab runs dozens of backtests per click. |
-| **Test integrity** | 281 tests run offline in 9 seconds instead of hammering a provider. |
+| **Test integrity** | 294 tests run offline in 9 seconds instead of hammering a provider. |
 
 It is a *snapshot*, not a cache: there is no TTL, nothing expires, and nothing
 refreshes on a timer. To move the baseline forward, either press **↻ Refresh
@@ -474,9 +485,24 @@ the 40×-split-adjusted value of its then-$62 price.
 The full reasoning for all 21 decisions is in
 [`PROJECT_PLAN.md`](PROJECT_PLAN.md#6-decision-log).
 
+### What the simulation does *not* model
+
+Stated plainly, because an unstated simplification is a claim.
+
+| Simplification | Direction | Why it is left alone |
+|:--|:--|:--|
+| **Idle cash earns no interest** | *Conservative* — understates strategies that sit out | Real cash earns T-bills. Adding that would flatter every trend strategy, so the omission errs against our own results. |
+| **Fractional units** | Slightly optimistic | $10,000 buys 6,319.969 NVDA shares. Fine for crypto and modern brokers; a lot-size system would add real complexity for marginal realism. |
+| **No liquidity or market-impact limits** | Optimistic at size | Daily bars on three of the most liquid instruments in the world. A $100k order moves none of them. |
+| **No stop-losses or intraday exits** | Neutral | Not in the brief; every strategy is close-to-close by construction. |
+
+What *is* modelled: commission and slippage on both sides, short borrow cost per
+bar, split and dividend adjustment, per-asset annualisation, and next-open
+execution.
+
 ### Testing
 
-**281 tests.** Values are hand-computed against known answers, not snapshotted
+**294 tests.** Values are hand-computed against known answers, not snapshotted
 from the implementation — a snapshot test locks in whatever bug exists.
 
 | Suite | Tests | Covers |
@@ -484,10 +510,10 @@ from the implementation — a snapshot test locks in whatever bug exists.
 | `test_indicators.py` | 31 | Hand-computed EMA recursion, Bollinger population std, Wilder ATR, plus 9 causality tests |
 | `test_metrics.py` | 32 | Closed-form cases: compounding, CAGR doubling, Sharpe by formula, hand-built drawdown paths |
 | `test_correlation_regime.py` | 27 | Panel alignment, matrix symmetry, regime label rules, regime causality |
-| `test_engine.py` | 33 | Look-ahead, cost arithmetic to the cent, equity curve vs trade log agreement |
+| `test_engine.py` | 43 | Look-ahead, cost arithmetic to the cent, equity curve vs trade log agreement |
 | `test_strategies.py` | 51 | Known-answer price paths, parameter validation, strategy causality |
 | `test_robustness.py` | 35 | Plateau detection against constructed surfaces with known answers |
-| `test_api.py` | 72 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
+| `test_api.py` | 75 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
 
 ---
 
@@ -514,7 +540,7 @@ backend/
       routes.py            REST endpoints
       serialise.py         inf/NaN -> null, numpy -> native
     main.py                FastAPI app, CORS, /health
-  tests/                   281 tests
+  tests/                   294 tests
   scripts/                 One runnable gate per phase
   data_snapshot/           Committed CSV market data
 frontend/
@@ -590,7 +616,7 @@ Interactive docs at `http://localhost:8000/docs`.
 | `GET` | `/api/strategies` | Strategy catalogue with defaults |
 | `GET` | `/api/ohlcv?asset=` | Validated bars + quality report |
 | `GET` | `/api/indicators?asset=` | All indicators, configurable periods |
-| `GET` | `/api/metrics?asset=` | Risk summary + plot series |
+| `GET` | `/api/metrics?asset=` | Risk summary, rolling returns/volatility, drawdown |
 | `GET` | `/api/correlation?window=` | Matrix + rolling correlation |
 | `GET` | `/api/rolling-correlation?a=&b=` | One pair's rolling correlation |
 | `GET` | `/api/regime?asset=` | Regime labels over time |

@@ -7,11 +7,12 @@ import {
   Legend,
   Line,
   ResponsiveContainer,
+  Scatter,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
-import { api, type Bar as OhlcBar } from '../api'
+import { api, DEFAULT_CONFIG, type Bar as OhlcBar } from '../api'
 import { ErrorState, Loading, Note, Panel } from '../components/Common'
 import { Figure, Insight } from '../components/Insight'
 import { num, pct, tipNum, tipVolume } from '../format'
@@ -21,16 +22,18 @@ export function Overview({ asset }: { asset: string }) {
   const [rows, setRows] = useState<OhlcBar[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [signals, setSignals] = useState<{ date: string; position: number }[]>([])
+  const [entries, setEntries] = useState<Set<string>>(new Set())
+  const [exits, setExits] = useState<Set<string>>(new Set())
 
   const load = () => {
     setRows(null)
     setError(null)
     Promise.all([
-      api.indicators(asset, 50, 200),
-      api.backtest(asset, 'sma_crossover', {}, {
-        initial_capital: 100000, commission_bps: 10, slippage_bps: 5,
-        position_pct: 1, allow_short: false,
-      }),
+      // EMA 50 alongside SMA 50/200 — the brief asks for both on the chart.
+      api.indicators(asset, 50, 200, 20, 50),
+      // Shared defaults rather than a literal, so the shading here always
+      // reflects the same execution assumptions as the Backtest tab.
+      api.backtest(asset, 'sma_crossover', {}, DEFAULT_CONFIG),
     ])
       .then(([ind, bt]) => {
         setRows(ind.rows)
@@ -39,6 +42,16 @@ export function Overview({ asset }: { asset: string }) {
             date,
             position: bt.strategy.curves.position[i],
           })),
+        )
+        // Discrete entry/exit dates straight from the trade log, so the markers
+        // are the actual fills rather than a re-derived guess at them.
+        setEntries(new Set((bt.strategy.trades ?? []).map((t) => t.entry_date)))
+        setExits(
+          new Set(
+            (bt.strategy.trades ?? [])
+              .map((t) => t.exit_date)
+              .filter((d): d is string => Boolean(d)),
+          ),
         )
       })
       .catch((e) => setError(e.message))
@@ -59,7 +72,10 @@ export function Overview({ asset }: { asset: string }) {
       close: r.close,
       sma50: r.sma_50,
       sma200: r.sma_200,
+      ema50: r.ema_50,
       volume: r.volume,
+      buy: entries.has(String(r.date)) ? r.close : null,
+      sell: exits.has(String(r.date)) ? r.close : null,
       // 1 when the crossover strategy holds a position. Plotted against a
       // hidden 0-1 axis so it renders as a full-height background band rather
       // than an area under the price line.
@@ -138,12 +154,17 @@ export function Overview({ asset }: { asset: string }) {
             <Line yAxisId="price" dataKey="close" name="close" stroke="#e2e8f0" dot={false} strokeWidth={1.4} />
             <Line yAxisId="price" dataKey="sma50" name="SMA 50" stroke="#4f9cf9" dot={false} strokeWidth={1.2} />
             <Line yAxisId="price" dataKey="sma200" name="SMA 200" stroke="#f59e0b" dot={false} strokeWidth={1.2} />
+            <Line yAxisId="price" dataKey="ema50" name="EMA 50" stroke="#a78bfa" dot={false} strokeWidth={1.1} strokeDasharray="3 2" />
+            {/* Actual fills from the trade log. */}
+            <Scatter yAxisId="price" dataKey="buy" name="buy" fill="#22c55e" shape="triangle" isAnimationActive={false} />
+            <Scatter yAxisId="price" dataKey="sell" name="sell" fill="#ef4444" shape="triangle" isAnimationActive={false} />
           </ComposedChart>
         </ResponsiveContainer>
         <Note>
           Log scale — over a decade a linear axis compresses the early years into
-          a flat line. The green band marks the periods a 50/200 SMA crossover
-          would have been invested.
+          a flat line. Green bands mark the periods a 50/200 SMA crossover would
+          have been invested; the green and red triangles are its actual buy and
+          sell fills, taken from the trade log rather than re-derived.
         </Note>
       </Panel>
 

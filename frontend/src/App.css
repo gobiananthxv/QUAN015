@@ -240,3 +240,10 @@ tr.benchmark-row { border-top: 2px solid var(--border); font-style: italic; opac
 .chip:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
 .chip.active { background: var(--accent); color: #041022; border-color: var(--accent); font-weight: 600; }
 .chip:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Inline clarifier beside a heading. */
+.hint-tag {
+  font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .4px;
+  color: var(--muted); border: 1px solid var(--border); border-radius: 4px;
+  padding: 2px 6px; margin-left: 6px; cursor: help; vertical-align: middle;
+}

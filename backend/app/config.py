@@ -45,6 +45,10 @@ DEFAULT_INITIAL_CAPITAL = 100_000.0
 DEFAULT_COMMISSION_BPS = 10.0  # 0.10% per side
 DEFAULT_SLIPPAGE_BPS = 5.0     # 0.05% per side
 DEFAULT_POSITION_PCT = 1.0     # fraction of equity committed per entry
+# Annual borrow fee charged while a short position is open. 50 bps is a typical
+# easy-to-borrow rate; hard-to-borrow names cost far more. Zero would let a
+# short be held indefinitely for free.
+DEFAULT_BORROW_BPS_ANNUAL = 50.0
 
 RISK_FREE_RATE = 0.02  # annual, used by Sharpe/Sortino
 

@@ -123,7 +123,10 @@ echo
 echo "  Ctrl-C to stop both."
 echo
 
-( cd backend && "$PY_ABS" -m uvicorn app.main:app --port "$API_PORT" ) &
+# --reload: the dashboard already hot-reloads, and without the same on the API
+# a backend edit leaves the browser talking to stale code while everything
+# still returns 200. That mismatch is invisible and costly to debug.
+( cd backend && "$PY_ABS" -m uvicorn app.main:app --port "$API_PORT" --reload ) &
 npm run dev --prefix frontend -- --port "$UI_PORT" &
 
 wait

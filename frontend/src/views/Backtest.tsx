@@ -174,6 +174,46 @@ export function Backtest({
               onChange={(e) => setConfig({ ...config, slippage_bps: Number(e.target.value) })}
             />
           </label>
+          <label title="Fraction of equity committed per entry. 0.5 deploys half and leaves half in cash.">
+            position size %
+            <input
+              type="number"
+              step={5}
+              min={5}
+              max={100}
+              value={Math.round(config.position_pct * 100)}
+              onChange={(e) =>
+                setConfig({
+                  ...config,
+                  position_pct: Math.min(Math.max(Number(e.target.value), 1), 100) / 100,
+                })
+              }
+            />
+          </label>
+          <label title="Allow short positions. Shorts pay a borrow fee for every bar they are held.">
+            allow shorts
+            <select
+              value={config.allow_short ? 'yes' : 'no'}
+              onChange={(e) => setConfig({ ...config, allow_short: e.target.value === 'yes' })}
+            >
+              <option value="no">no</option>
+              <option value="yes">yes</option>
+            </select>
+          </label>
+          {config.allow_short && (
+            <label title="Annual cost of borrowing the asset, charged per bar while short.">
+              borrow bps/yr
+              <input
+                type="number"
+                step={25}
+                min={0}
+                value={config.borrow_bps_annual}
+                onChange={(e) =>
+                  setConfig({ ...config, borrow_bps_annual: Number(e.target.value) })
+                }
+              />
+            </label>
+          )}
 
           <label>
             from
@@ -285,11 +325,20 @@ export function Backtest({
                   <Stat label="Win rate" value={pct(strat.stats.win_rate)} />
                   <Stat label="Profit factor" value={num(strat.stats.profit_factor)} hint="Gross wins / gross losses. Blank when there were no losing trades." />
                   <Stat label="Exposure" value={pct(strat.stats.exposure)} hint="Share of days holding a position" />
-                  <Stat label="Costs paid" value={money(strat.stats.total_costs)} />
+                  <Stat label="Costs paid" value={money(strat.stats.total_costs)} hint="Commission + slippage + borrow" />
+                  <Stat label="Position size" value={pct(strat.config.position_pct as number, 0)} hint="Fraction of equity committed per entry" />
                 </div>
               </div>
               <div>
-                <h3 style={{ color: STRATEGY_COLORS.buy_and_hold }}>Buy &amp; Hold</h3>
+                <h3 style={{ color: STRATEGY_COLORS.buy_and_hold }}>
+                  Buy &amp; Hold{' '}
+                  <span
+                    className="hint-tag"
+                    title="Always fully invested, whatever position size the strategy uses. A benchmark that shrank with your settings would not be a reference point. It still pays the same commission and slippage."
+                  >
+                    always 100% invested
+                  </span>
+                </h3>
                 <div className="stats">
                   <Stat label="Total return" value={pct(bench.stats.total_return)} raw={bench.stats.total_return} />
                   <Stat label="CAGR" value={pct(bench.stats.cagr)} raw={bench.stats.cagr} />

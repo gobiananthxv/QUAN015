@@ -23,7 +23,13 @@ from ..analytics.correlation import (
     sample_size,
 )
 from ..analytics.indicators import compute_indicators
-from ..analytics.metrics import daily_returns, drawdown_series, rolling_volatility, summarise
+from ..analytics.metrics import (
+    daily_returns,
+    drawdown_series,
+    rolling_returns,
+    rolling_volatility,
+    summarise,
+)
 from ..analytics.regime import classify
 from ..backtest.engine import BacktestConfig, buy_and_hold
 from ..backtest.robustness import (
@@ -55,6 +61,7 @@ class ConfigIn(BaseModel):
     slippage_bps: float = Field(5.0, ge=0, le=1000)
     position_pct: float = Field(1.0, gt=0, le=1)
     allow_short: bool = False
+    borrow_bps_annual: float = Field(50.0, ge=0, le=5000)
 
     def to_config(self) -> BacktestConfig:
         return BacktestConfig(**self.model_dump())
@@ -216,7 +223,11 @@ def get_indicators(
 
 
 @router.get("/metrics")
-def get_metrics(asset: str, vol_window: int = Query(30, ge=5, le=365)) -> dict:
+def get_metrics(
+    asset: str,
+    vol_window: int = Query(30, ge=5, le=365),
+    return_window: int = Query(252, ge=5, le=1260),
+) -> dict:
     """Buy-and-hold risk/return for one asset, with the series the Risk view plots."""
     key = _asset_or_404(asset)
     asset_meta = get_asset(key)
@@ -233,6 +244,13 @@ def get_metrics(asset: str, vol_window: int = Query(30, ge=5, le=365)) -> dict:
             "rolling_vol": series_to_pairs(
                 rolling_volatility(returns, vol_window, asset_meta.ann_factor).dropna(), "vol"
             ),
+            # Trailing N-bar return at each point: "if you had bought here and
+            # held for a year, what would you have made?" A single total return
+            # hides how wildly that answer varies with entry date.
+            "rolling_returns": series_to_pairs(
+                rolling_returns(close, return_window).dropna(), "ret"
+            ),
+            "return_window": return_window,
         }
     )
 

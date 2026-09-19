@@ -31,7 +31,7 @@ Write-Output 'Dashboard -> http://localhost:5173'
 Write-Output ''
 
 $api = Start-Process -PassThru -NoNewWindow -FilePath (Resolve-Path $py) `
-    -ArgumentList '-m','uvicorn','app.main:app','--port','8000' -WorkingDirectory 'backend'
+    -ArgumentList '-m','uvicorn','app.main:app','--port','8000','--reload' -WorkingDirectory 'backend'
 try {
     npm run dev --prefix frontend
 } finally {

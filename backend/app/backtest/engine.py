@@ -24,13 +24,14 @@ shortcut cannot.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
 
 from ..analytics.metrics import cumulative_returns, drawdown_series, summarise
 from ..config import (
+    DEFAULT_BORROW_BPS_ANNUAL,
     DEFAULT_COMMISSION_BPS,
     DEFAULT_INITIAL_CAPITAL,
     DEFAULT_POSITION_PCT,
@@ -51,6 +52,11 @@ class BacktestConfig:
     slippage_bps: float = DEFAULT_SLIPPAGE_BPS
     position_pct: float = DEFAULT_POSITION_PCT
     allow_short: bool = False
+    # Annual cost of borrowing the asset, charged per bar while short. Real
+    # shorts are not free: you pay a borrow fee for as long as the position is
+    # open. With this at zero a short position could be held for a decade at no
+    # cost, which flatters every short-side result.
+    borrow_bps_annual: float = DEFAULT_BORROW_BPS_ANNUAL
 
     def as_dict(self) -> dict:
         return {
@@ -59,6 +65,7 @@ class BacktestConfig:
             "slippage_bps": self.slippage_bps,
             "position_pct": self.position_pct,
             "allow_short": self.allow_short,
+            "borrow_bps_annual": self.borrow_bps_annual,
         }
 
 
@@ -75,6 +82,7 @@ class Trade:
     direction: int
     commission: float = 0.0
     slippage: float = 0.0
+    borrow: float = 0.0
     exit_date: pd.Timestamp | None = None
     exit_price: float | None = None
     ref_exit: float | None = None
@@ -86,7 +94,7 @@ class Trade:
 
     @property
     def costs(self) -> float:
-        return self.commission + self.slippage
+        return self.commission + self.slippage + self.borrow
 
     def as_dict(self) -> dict:
         return {
@@ -98,6 +106,7 @@ class Trade:
             "exit_price": round(self.exit_price, 4) if self.exit_price is not None else None,
             "commission": round(self.commission, 2),
             "slippage": round(self.slippage, 2),
+            "borrow": round(self.borrow, 2),
             "costs": round(self.costs, 2),
             "gross_pnl": round(self.gross_pnl, 2),
             "net_pnl": round(self.net_pnl, 2),
@@ -144,6 +153,7 @@ class BacktestResult:
                 "profit_factor": (won / lost) if lost > 0 else (float("inf") if won > 0 else 0.0),
                 "total_commission": sum(t.commission for t in self.trades),
                 "total_slippage": sum(t.slippage for t in self.trades),
+                "total_borrow": sum(t.borrow for t in self.trades),
                 "total_costs": sum(t.costs for t in self.trades),
                 "avg_bars_held": float(np.mean([t.bars_held for t in closed])) if closed else 0.0,
                 "exposure": float((self.position != 0).mean()) if len(self.position) else 0.0,
@@ -202,6 +212,9 @@ def run_backtest(
 
     comm_rate = cfg.commission_bps * BPS
     slip_rate = cfg.slippage_bps * BPS
+    # Per-bar borrow rate, de-annualised with the asset's own calendar so a
+    # crypto short (365 bars/year) is not charged an equity year's worth.
+    borrow_rate = (cfg.borrow_bps_annual * BPS) / get_asset(asset).ann_factor
 
     cash = float(cfg.initial_capital)
     units = 0.0          # unsigned size of the open position
@@ -271,6 +284,13 @@ def run_backtest(
                         slippage=size * slip_rate * ref,
                     )
 
+        # ---- carry cost of an open short ---------------------------------
+        # Charged on the position's current notional, every bar it is held.
+        if direction < 0 and open_trade is not None and borrow_rate > 0:
+            fee = units * closes[i] * borrow_rate
+            cash -= fee
+            open_trade.borrow += fee
+
         # ---- mark to market at this bar's close --------------------------
         equity_curve[i] = cash + direction * units * closes[i]
         position_curve[i] = direction
@@ -304,9 +324,23 @@ def run_backtest(
 def buy_and_hold(df: pd.DataFrame, asset: str, config: BacktestConfig | None = None) -> BacktestResult:
     """Benchmark: enter on the first tradable bar and hold to the end.
 
-    Deliberately run through the same engine as every strategy, so it pays the
-    same entry commission and slippage. Comparing a costed strategy against a
-    frictionless benchmark would quietly understate the strategy.
+    Run through the same engine as every strategy, so it pays the same entry
+    commission and slippage. Comparing a costed strategy against a frictionless
+    benchmark would quietly understate the strategy.
+
+    **Always fully invested**, regardless of the strategy's ``position_pct``.
+    Buy-and-hold means putting your capital in the asset and leaving it there;
+    a half-sized version is a 50/50 asset-and-cash portfolio, which is a
+    different thing wearing the same name. More importantly, a benchmark that
+    moves when you change a *strategy* setting is not a reference point — you
+    could halve your position size and the strategy would look no worse,
+    because the yardstick shrank with it.
+
+    Costs still come from the caller's config, so the like-for-like cost
+    treatment the comparison depends on is preserved.
     """
+    cfg = config or BacktestConfig()
+    if cfg.position_pct != 1.0:
+        cfg = replace(cfg, position_pct=1.0)
     signals = pd.Series(1.0, index=df.index)
-    return run_backtest(df, signals, asset, strategy="buy_and_hold", config=config)
+    return run_backtest(df, signals, asset, strategy="buy_and_hold", config=cfg)

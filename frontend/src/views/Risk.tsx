@@ -5,6 +5,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -24,6 +25,8 @@ export function Risk({ asset }: { asset: string }) {
     cumulative: Point[]
     drawdown: Point[]
     vol: Point[]
+    rolling: Point[]
+    returnWindow: number
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -39,6 +42,8 @@ export function Risk({ asset }: { asset: string }) {
           cumulative: m.cumulative.map((p) => ({ date: p.date, value: p.cum })),
           drawdown: m.drawdown.map((p) => ({ date: p.date, value: p.dd })),
           vol: m.rolling_vol.map((p) => ({ date: p.date, value: p.vol })),
+          rolling: m.rolling_returns.map((p) => ({ date: p.date, value: p.ret })),
+          returnWindow: m.return_window,
         }),
       )
       .catch((e) => setError(e.message))
@@ -123,6 +128,28 @@ export function Risk({ asset }: { asset: string }) {
           </AreaChart>
         </ResponsiveContainer>
         <Note>Every point is the loss from the highest value reached so far.</Note>
+      </Panel>
+
+      <Panel
+        title={`Rolling ${Math.round(data.returnWindow / 252)}-year return`}
+        subtitle="What you would have made buying on each date and holding"
+        wide
+      >
+        <ResponsiveContainer width="100%" height={230}>
+          <AreaChart data={data.rolling} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
+            <CartesianGrid stroke="#1e293b" vertical={false} />
+            <XAxis dataKey="date" minTickGap={60} {...axis} />
+            <YAxis tickFormatter={(v) => pct(v, 0)} {...axis} />
+            <Tooltip {...tooltip} formatter={tipPct} />
+            <ReferenceLine y={0} stroke="#64748b" />
+            <Area dataKey="value" stroke="#38bdf8" fill="#38bdf8" fillOpacity={0.16} isAnimationActive={false} />
+          </AreaChart>
+        </ResponsiveContainer>
+        <Note>
+          Each point is the return from buying on that date and holding for a
+          year. Where the line dips below zero, a buyer waited more than a year
+          to break even.
+        </Note>
       </Panel>
 
       <Panel title="Rolling 30-day volatility" subtitle="Annualised">

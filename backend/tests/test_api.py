@@ -651,3 +651,26 @@ def test_windowed_results_are_strictly_valid_json():
     )
     assert r.status_code == 200
     strict_json(r)
+
+
+def test_metrics_includes_rolling_returns():
+    """The brief lists rolling returns as a required indicator. It was computed
+    in metrics.py but surfaced nowhere — a requirement met on paper only."""
+    body = strict_json(client.get("/api/metrics?asset=NVDA"))
+    assert body["return_window"] == 252
+    values = [p["ret"] for p in body["rolling_returns"]]
+    assert len(values) > 2000
+    # Entry date matters enormously; a single total return hides that.
+    assert max(values) > 1.0 and min(values) < 0.0
+
+
+def test_rolling_return_window_is_configurable():
+    short = strict_json(client.get("/api/metrics?asset=GOLD&return_window=63"))
+    long_ = strict_json(client.get("/api/metrics?asset=GOLD&return_window=504"))
+    assert short["return_window"] == 63
+    assert len(short["rolling_returns"]) > len(long_["rolling_returns"])
+
+
+def test_indicators_expose_ema_for_the_price_chart():
+    body = strict_json(client.get("/api/indicators?asset=NVDA&ema_fast=20&ema_slow=50"))
+    assert "ema_20" in body["columns"] and "ema_50" in body["columns"]

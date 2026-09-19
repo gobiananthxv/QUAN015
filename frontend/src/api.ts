@@ -79,6 +79,7 @@ export interface BacktestStats extends Summary {
   total_costs: Num
   total_commission: Num
   total_slippage: Num
+  total_borrow: Num
   exposure: Num
   avg_bars_held: Num
 }
@@ -100,6 +101,7 @@ export interface Trade {
   exit_price: Num
   commission: Num
   slippage: Num
+  borrow: Num
   costs: Num
   gross_pnl: Num
   net_pnl: Num
@@ -122,8 +124,11 @@ export interface BacktestConfig {
   initial_capital: number
   commission_bps: number
   slippage_bps: number
+  /** Fraction of equity committed per entry, 0-1. */
   position_pct: number
   allow_short: boolean
+  /** Annual borrow fee charged per bar while a short is open. */
+  borrow_bps_annual: number
 }
 
 export const DEFAULT_CONFIG: BacktestConfig = {
@@ -132,6 +137,7 @@ export const DEFAULT_CONFIG: BacktestConfig = {
   slippage_bps: 5,
   position_pct: 1,
   allow_short: false,
+  borrow_bps_annual: 50,
 }
 
 /** Backtest window. Omitting both ends means the full history. */
@@ -221,9 +227,10 @@ export const api = {
   ohlcv: (asset: string) =>
     request<{ asset: string; rows: number; bars: Bar[] }>(`/api/ohlcv?asset=${asset}`),
 
-  indicators: (asset: string, smaFast = 20, smaSlow = 50) =>
+  indicators: (asset: string, smaFast = 20, smaSlow = 50, emaFast = 12, emaSlow = 26) =>
     request<{ asset: string; columns: string[]; rows: Bar[] }>(
-      `/api/indicators?asset=${asset}&sma_fast=${smaFast}&sma_slow=${smaSlow}`,
+      `/api/indicators?asset=${asset}&sma_fast=${smaFast}&sma_slow=${smaSlow}` +
+        `&ema_fast=${emaFast}&ema_slow=${emaSlow}`,
     ),
 
   metrics: (asset: string) =>
@@ -234,6 +241,8 @@ export const api = {
       cumulative: { date: string; cum: Num }[]
       drawdown: { date: string; dd: Num }[]
       rolling_vol: { date: string; vol: Num }[]
+      rolling_returns: { date: string; ret: Num }[]
+      return_window: number
     }>(`/api/metrics?asset=${asset}`),
 
   correlation: (window = 90) =>
