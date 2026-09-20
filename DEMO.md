@@ -144,7 +144,7 @@ Point at period stability.
 
 ## 2:50 — Close (15s)
 
-> "486 tests, **fifteen of them causality tests** — nine indicators, five
+> "496 tests, **fifteen of them causality tests** — nine indicators, five
 > strategies and the regime labels, each computed on a truncated series and on
 > the full one, asserting the overlap is identical. If appending future data
 > changed a past value, the thing leaks the future. Look-ahead bias ruled out

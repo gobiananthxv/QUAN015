@@ -441,6 +441,25 @@ fresh budget per request, which is an opt-out disguised as a feature. There is
 no proxy here, so `client_key` reads `request.client.host` only. A regression
 test rotates the header across the budget and asserts the 429 still arrives.
 
+**D46 — Bodies are capped, and must declare their length (Phase 9).**
+A rate limit bounds how many requests arrive, not how large each is, and the
+assistant forwards its payload to a metered provider — so twenty permitted
+requests carrying 100 MB each pass a 20-per-minute budget untouched. Starlette
+imposes no ceiling, so one was added: 1 MiB for JSON, 17 MiB on the image
+upload, which sits just above that endpoint's own 16 MiB cap so the transport
+limit never fires first and reports the wrong reason.
+
+Requiring `Content-Length` (411 otherwise) was the part worth thinking about.
+Counting bytes mid-stream also works, and was tried: it fails partway through
+an upload, at which point there is no clean way to answer. The client is still
+writing when the server wants to reply, h11 raises `LocalProtocolError:
+... state=MUST_CLOSE`, the caller sees a connection reset rather than a 413,
+and the server logs a traceback on demand for anyone hostile. Every real client
+declares a length, so requiring it makes the check arithmetic on a header,
+decided before a byte of body is read. The streaming count is kept as a
+backstop against a lying or rewritten header and is tested directly rather than
+through a client — provoking it through one is what produced the mess above.
+
 **D45 — 401 for a bad credential, 403 only for the recipient policy (Phase 9).**
 Both refusals originally answered 403, which made them indistinguishable to the
 dashboard — and "your token is wrong" and "that address is not approved" call

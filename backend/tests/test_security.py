@@ -14,6 +14,8 @@ the guard spreading.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -529,3 +531,144 @@ def test_the_service_refusal_maps_to_403(monkeypatch):
         "/api/report/send-email", json={"email": "attacker@evil.com"}
     )
     assert response.status_code == 403
+
+
+# ---------------------------------------------------------------- body size
+
+
+def test_a_normal_payload_is_unaffected(monkeypatch):
+    """The cap must sit far above anything the dashboard actually sends."""
+    monkeypatch.delenv(security.TOKEN_ENV, raising=False)
+    monkeypatch.setattr(
+        "app.api.chat_routes.chat_completion", lambda *a, **k: "fine"
+    )
+    page = {"charts": [{"id": f"c{i}", "result": {"sharpe": 1.2}} for i in range(200)]}
+    response = client.post(
+        "/api/chat", json={"page_json": page, "user_prompt": "summarise"}
+    )
+    assert response.status_code == 200
+
+
+def test_an_oversized_declared_body_is_refused(monkeypatch):
+    monkeypatch.delenv(security.TOKEN_ENV, raising=False)
+    fat = b'{"user_prompt":"' + b"x" * (security.MAX_JSON_BODY_BYTES + 1024) + b'"}'
+    response = client.post(
+        "/api/chat", content=fat, headers={"Content-Type": "application/json"}
+    )
+    assert response.status_code == 413
+    assert "limit" in response.json()["detail"]
+
+
+def test_an_oversized_body_never_reaches_the_provider(monkeypatch):
+    """The point of the cap. A refused request must cost nothing downstream."""
+    monkeypatch.delenv(security.TOKEN_ENV, raising=False)
+    calls = []
+    monkeypatch.setattr(
+        "app.api.chat_routes.chat_completion",
+        lambda *a, **k: calls.append(1) or "ok",
+    )
+    fat = b'{"user_prompt":"' + b"x" * (security.MAX_JSON_BODY_BYTES + 1024) + b'"}'
+    client.post("/api/chat", content=fat, headers={"Content-Type": "application/json"})
+    assert calls == []
+
+
+def test_an_undeclared_body_is_refused_with_411(monkeypatch):
+    """The case an honest implementation forgets.
+
+    A chunked body declares no Content-Length, so the size cannot be checked
+    before reading it — and failing mid-upload has no clean answer, because the
+    client is still writing when the server wants to reply. Requiring the
+    declaration turns the whole problem into arithmetic on a header.
+    """
+    monkeypatch.delenv(security.TOKEN_ENV, raising=False)
+
+    def chunks():
+        yield b'{"user_prompt":"hello"}'
+
+    response = client.post(
+        "/api/chat", content=chunks(), headers={"Content-Type": "application/json"}
+    )
+    assert response.status_code == 411
+    assert "Content-Length" in response.json()["detail"]
+
+
+def test_the_streaming_backstop_catches_a_lying_content_length():
+    """A declared length that undercounts the actual body.
+
+    This is the case the header check cannot catch — a client that declares
+    100 bytes and sends megabytes, or a proxy that rewrote the header. The
+    middleware counts what it actually receives and fails when the real total
+    goes over, independent of what was promised.
+
+    Driven as raw ASGI rather than through a client, because provoking a
+    mid-upload rejection over a real connection is exactly what produces the
+    protocol error the 411 check exists to avoid.
+    """
+    chunk = b"x" * 8192
+    delivered = 0
+
+    async def receive():
+        nonlocal delivered
+        delivered += len(chunk)
+        return {"type": "http.request", "body": chunk, "more_body": True}
+
+    async def app(scope, receive_, send_):
+        while True:  # a route reading its body, as Starlette would
+            await receive_()
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/chat",
+        "headers": [(b"content-length", b"100")],  # the lie
+    }
+
+    async def send(_message):  # pragma: no cover - never reached
+        raise AssertionError("the application should not have produced a response")
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(security.BodySizeLimitMiddleware(app)(scope, receive, send))
+
+    assert exc.value.status_code == 413
+    # Refused promptly, not after absorbing an unbounded upload.
+    assert delivered <= security.MAX_JSON_BODY_BYTES + len(chunk)
+
+
+def test_the_upload_path_gets_the_larger_ceiling():
+    """Sized just above the image endpoint's own cap, so the transport limit
+    never fires first and reports the wrong reason."""
+    assert security.body_limit_for("/api/news-sentiment/analyze-image") > (
+        security.MAX_JSON_BODY_BYTES
+    )
+    assert security.body_limit_for("/api/chat") == security.MAX_JSON_BODY_BYTES
+
+
+def test_an_image_within_its_own_cap_passes_the_transport_limit(monkeypatch):
+    """A 2MB upload is far over the JSON ceiling and must still be accepted, or
+    the cap has broken the feature it was meant to leave alone."""
+    monkeypatch.delenv(security.TOKEN_ENV, raising=False)
+    big_but_legal = b"\x89PNG\r\n" + b"\x00" * (2 * 1024 * 1024)
+    response = client.post(
+        "/api/news-sentiment/analyze-image",
+        files={"image": ("big.png", big_but_legal, "image/png")},
+    )
+    # 503 (no provider key) or 502 both mean it got past the transport limit.
+    assert response.status_code != 413
+
+
+def test_reads_are_not_inspected(monkeypatch):
+    """Only methods that carry a body are checked; a GET passes straight through."""
+    monkeypatch.delenv(security.TOKEN_ENV, raising=False)
+    assert client.get("/api/assets").status_code == 200
+
+
+def test_a_malformed_content_length_does_not_crash(monkeypatch):
+    """An unparseable header falls back to counting rather than raising."""
+    monkeypatch.delenv(security.TOKEN_ENV, raising=False)
+    assert security._content_length({"headers": [(b"content-length", b"abc")]}) is None
+
+
+def test_health_publishes_the_body_ceilings():
+    status = security_status()
+    assert status["max_body_bytes"] == security.MAX_JSON_BODY_BYTES
+    assert status["max_upload_bytes"] == security.MAX_UPLOAD_BODY_BYTES

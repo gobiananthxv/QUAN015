@@ -34,7 +34,7 @@ every result for the four ways backtests normally lie.
 | [DEMO.md](DEMO.md) | A scripted three-minute walkthrough |
 | [PROJECT_PLAN.md](PROJECT_PLAN.md) | Phase plan and full decision log |
 
-**Status:** all nine phases complete · **486 tests passing** · all 19
+**Status:** all nine phases complete · **496 tests passing** · all 19
 problem-statement requirements delivered.
 
 ---
@@ -308,7 +308,7 @@ That is a deliberate trade, and the reasons are in priority order:
 | **Reproducibility** | A backtest must give the same answer today and next week. If the underlying prices moved between runs, every reported figure would drift and the tests asserting exact values would fail daily. |
 | **Availability** | The platform works with no internet connection at all. |
 | **Speed** | ~14 ms from disk against ~500 ms over the network — and the Research tab runs dozens of backtests per click. |
-| **Test integrity** | 486 tests run offline in about a minute instead of hammering a provider. |
+| **Test integrity** | 496 tests run offline in about a minute instead of hammering a provider. |
 
 It is a *snapshot*, not a cache: there is no TTL, nothing expires, and nothing
 refreshes on a timer. To move the baseline forward, either press **↻ Refresh
@@ -745,7 +745,7 @@ adjustment, per-asset annualisation, and next-open execution.
 
 ### Testing
 
-**486 tests.** Values are hand-computed against known answers, not snapshotted
+**496 tests.** Values are hand-computed against known answers, not snapshotted
 from the implementation — a snapshot test locks in whatever bug exists.
 
 | Suite | Tests | Covers |
@@ -757,7 +757,7 @@ from the implementation — a snapshot test locks in whatever bug exists.
 | `test_strategies.py` | 68 | Known-answer price paths, parameter validation, strategy causality |
 | `test_robustness.py` | 35 | Plateau detection against constructed surfaces with known answers |
 | `test_api.py` | 99 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
-| `test_security.py` | 61 | Token guard, token-bucket arithmetic against injected time, grid cap, recipient allowlist — and that the other thirteen endpoints stay open |
+| `test_security.py` | 71 | Token guard, token-bucket arithmetic against injected time, grid cap, recipient allowlist — and that the other thirteen endpoints stay open |
 | `test_email_report.py` | 17 | Address validation, archive assembly, SMTP dispatch with the transport mocked |
 | `test_chat.py`, `test_news_sentiment.py` | 26 | Provider contracts and error mapping, with every network call monkeypatched |
 
@@ -833,6 +833,22 @@ decorations. Deliberately not a framework.
 | Recipient allowlist | send-email | **On, fails closed** — the SMTP sender only |
 | Grid cell cap (400) | robustness | **On.** A `100×100` grid is 10,000 backtests in one request |
 | Concurrent sweep bound (2) | robustness | **On.** Otherwise a sweep can starve `/health` |
+| Body size ceiling | every POST | **On.** 1 MiB for JSON, 17 MiB on the image upload |
+
+That last row closes a gap the rate limit cannot. A budget bounds how *many*
+requests arrive, not how large each one is — and the assistant forwards its
+payload to a metered provider, so twenty permitted requests carrying 100 MB
+each walk straight through a 20-per-minute limit. Starlette imposes no ceiling
+of its own.
+
+A body must also **declare its length**, or it gets `411 Length Required`.
+Every client that matters already does. The alternative was counting bytes
+mid-stream and failing partway, which works but has no clean answer: the client
+is still uploading when the server wants to reply, so the response races the
+upload, h11 raises `LocalProtocolError`, and the caller sees a dropped
+connection instead of a 413 while the log fills with tracebacks a hostile
+caller can produce on demand. Requiring the declaration turns the whole thing
+into arithmetic on a header, decided before a byte of body is read.
 
 The asymmetry in that last column is the only interesting design decision here.
 Rate limits and the allowlist are always on, because the things they prevent —
@@ -871,6 +887,8 @@ open:
   "token_header": "X-QMAFIB-Token",
   "rate_limits": {"refresh": "3/300s", "email": "3/3600s", "chat": "20/60s",
                   "sentiment": "10/60s", "robustness": "30/60s"},
+  "max_body_bytes": 1048576,
+  "max_upload_bytes": 17825792,
   "max_grid_cells": 400,
   "report_recipients_configured": 1
 }
@@ -892,7 +910,7 @@ for free. This way a guesser runs out of requests.
 
 ### The tests that matter most are the negative ones
 
-Of the 61 tests in [`test_security.py`](backend/tests/test_security.py), the
+Of the 71 tests in [`test_security.py`](backend/tests/test_security.py), the
 ones worth reading first assert what is **not** guarded: that `/api/assets`,
 `/api/metrics`, `/api/ohlcv`, `/api/strategies` and `/api/panel` return 200
 with the strictest configuration active, and that sixty consecutive reads are
@@ -934,7 +952,7 @@ backend/
     email_service.py       Report archive + SMTP dispatch
     security.py            Capability boundary: token, rate limits, allowlist
     main.py                FastAPI app, CORS, /health
-  tests/                   486 tests
+  tests/                   496 tests
   scripts/                 One runnable gate per phase
   data_snapshot/           Committed CSV market data
 frontend/

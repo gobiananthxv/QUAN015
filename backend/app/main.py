@@ -15,7 +15,7 @@ from .api.chat_routes import router as chat_router
 from .api.news_sentiment_routes import router as news_sentiment_router
 from .api.routes import router
 from .config import ASSETS
-from .security import security_status
+from .security import BodySizeLimitMiddleware, security_status
 
 DISCLAIMER = (
     "Research and historical analysis only. Backtested performance is computed "
@@ -34,6 +34,18 @@ app = FastAPI(
 # The dashboard is served by Vite on a different port in development. Origins are
 # listed explicitly rather than using "*", which would be a habit worth not
 # forming even on a local-only tool.
+# A rate limit bounds how many requests arrive; this bounds how large each one
+# may be. The assistant forwards its payload to a metered provider, so without
+# it twenty permitted requests can still carry unbounded cost.
+#
+# Added *before* CORS deliberately. `add_middleware` prepends, so the last one
+# added ends up outermost — which means this sits inside CORSMiddleware and a
+# 413 comes back with the CORS headers on it. Reversed, the browser would report
+# an opaque CORS failure and the dashboard could never show the real reason.
+# Routing and validation are still both further in, so an oversized body is
+# refused before anything parses it.
+app.add_middleware(BodySizeLimitMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

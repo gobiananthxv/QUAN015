@@ -40,6 +40,7 @@ read as claiming otherwise.
 """
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import threading
@@ -77,6 +78,22 @@ SWEEP_WAIT_SECONDS = 10.0
 # Distinct rate-limit keys held in memory. Bounded so a spray of forged
 # addresses cannot grow the table without limit.
 MAX_TRACKED_CLIENTS = 4096
+
+# Request body ceilings. A rate limit bounds how *many* requests arrive, not how
+# large each one is, and the assistant forwards its payload to a metered
+# provider -- so twenty permitted requests carrying 100 MB each walk straight
+# through the budget. Starlette imposes no limit of its own.
+#
+# 1 MiB is roughly a hundred times the largest ``page_json`` the dashboard
+# builds, which is chart descriptors and computed metrics rather than price
+# series. Generous for every legitimate caller, useless as an amplifier.
+MAX_JSON_BODY_BYTES = 1024 * 1024
+
+# The image endpoint enforces its own 16 MiB cap after decoding the multipart
+# envelope; this sits just above it so the transport limit never fires first and
+# reports the wrong reason.
+MAX_UPLOAD_BODY_BYTES = 17 * 1024 * 1024
+UPLOAD_PATHS = ("/api/news-sentiment/analyze-image",)
 
 
 def configured_token() -> str | None:
@@ -256,6 +273,122 @@ def check_grid_size(grid: dict[str, list]) -> None:
         )
 
 
+# ---------------------------------------------------------------- body size
+
+
+def body_limit_for(path: str) -> int:
+    """The ceiling that applies to a request for ``path``."""
+    return MAX_UPLOAD_BODY_BYTES if path in UPLOAD_PATHS else MAX_JSON_BODY_BYTES
+
+
+class BodySizeLimitMiddleware:
+    """Refuse request bodies larger than the ceiling for their path.
+
+    Written as raw ASGI rather than ``BaseHTTPMiddleware`` because the useful
+    version of this check happens *before* the application reads anything.
+
+    A body must **declare its length**. Every client that matters already does
+    — browser ``fetch`` with a string or ``FormData`` body, ``curl``, ``httpx``,
+    ``requests`` — and one that does not gets ``411 Length Required``, which is
+    the status HTTP defines for exactly this. That turns the check into simple
+    arithmetic on a header, decided before a single byte of body is read.
+
+    The alternative was to count bytes as they stream and fail mid-upload. It
+    works, but there is no clean way to answer: the client is still writing when
+    the server wants to reply, so the response races the upload and h11 raises
+    ``LocalProtocolError: can't handle event type Response ... state=MUST_CLOSE``.
+    The connection is dropped, the caller sees a reset rather than a 413, and
+    the server logs a traceback that a hostile caller can produce on demand.
+    Requiring the declaration avoids all of it.
+
+    The streaming count is kept anyway, as a backstop for a body that arrives
+    undeclared despite the check — a proxy rewriting headers, say. It should
+    never fire in this deployment, and it is tested directly rather than through
+    a client, because provoking it through one is what produces the mess above.
+
+    Only methods that carry a body are inspected; a GET passes straight through.
+    """
+
+    BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") != "http" or scope.get("method") not in self.BODY_METHODS:
+            await self.app(scope, receive, send)
+            return
+
+        limit = body_limit_for(scope.get("path", ""))
+
+        declared = _content_length(scope)
+        if declared is None:
+            await _send_json(
+                send,
+                411,
+                "Request body must declare a Content-Length. Chunked uploads "
+                "are not accepted on this API.",
+            )
+            return
+        if declared > limit:
+            await _send_json(
+                send,
+                413,
+                f"Request body is {declared} bytes; the limit for this "
+                f"endpoint is {limit} bytes.",
+            )
+            return
+
+        received = 0
+
+        async def counting_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise HTTPException(
+                        413,
+                        f"Request body exceeds the {limit // (1024 * 1024)}MB limit "
+                        "for this endpoint.",
+                    )
+            return message
+
+        await self.app(scope, counting_receive, send)
+
+
+def _content_length(scope) -> int | None:
+    for name, value in scope.get("headers", []):
+        if name == b"content-length":
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
+async def _send_json(send, status: int, detail: str) -> None:
+    """Answer without invoking the application.
+
+    Hand-rolled because at this point there is no request object to build a
+    normal response from -- and constructing one would mean reading the body
+    this function exists to avoid reading. The shape matches FastAPI's own
+    errors so the dashboard's parser needs no special case.
+    """
+    body = json.dumps({"detail": detail}).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
 # ---------------------------------------------------------------- mail recipients
 
 
@@ -308,6 +441,8 @@ def security_status() -> dict:
         "token_required": configured_token() is not None,
         "token_header": TOKEN_HEADER,
         "rate_limits": {name: f"{n}/{int(w)}s" for name, (n, w) in BUDGETS.items()},
+        "max_body_bytes": MAX_JSON_BODY_BYTES,
+        "max_upload_bytes": MAX_UPLOAD_BODY_BYTES,
         "max_grid_cells": MAX_GRID_CELLS,
         "report_recipients_configured": len(recipients),
     }
