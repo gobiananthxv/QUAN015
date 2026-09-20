@@ -18,12 +18,13 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from ..analytics.indicators import ema, sma
 from ..config import get_asset
 from ..data.store import load_asset
+from ..security import rate_limit, require_token
 from ..news_sentiment_backend import (
     ALLOWED_IMAGE_TYPES,
     MAX_IMAGE_BYTES,
@@ -76,9 +77,16 @@ def news_sentiment_health() -> dict:
 # ---------------------------------------------------------------- analysis
 
 
-@router.post("/analyze-text")
+@router.post(
+    "/analyze-text",
+    dependencies=[Depends(rate_limit("sentiment")), Depends(require_token)],
+)
 def analyze_text(body: AnalyzeTextIn) -> dict:
-    """Analyse a pasted financial news article via Gemini."""
+    """Analyse a pasted financial news article via Gemini.
+
+    Guarded for the same reason as the chat proxy: every call spends a metered
+    key that belongs to whoever is running the platform.
+    """
     try:
         result = _analyzer.analyze_news_text(body.text, provider=body.provider)
     except ApiKeyError as exc:
@@ -91,12 +99,20 @@ def analyze_text(body: AnalyzeTextIn) -> dict:
     return clean(result)
 
 
-@router.post("/analyze-image")
+@router.post(
+    "/analyze-image",
+    dependencies=[Depends(rate_limit("sentiment")), Depends(require_token)],
+)
 def analyze_image(
     image: UploadFile = File(...),
     provider: str = Query("google"),
 ) -> dict:
-    """Analyse a news screenshot (newspaper, terminal, website) via Gemini OCR."""
+    """Analyse a news screenshot (newspaper, terminal, website) via Gemini OCR.
+
+    The content-type allowlist and size cap below predate the capability
+    boundary and stay where they are: they bound what reaches the provider,
+    while the token and rate budget bound how often anything does.
+    """
     content_type = image.content_type or "application/octet-stream"
     if content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(

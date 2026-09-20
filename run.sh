@@ -126,7 +126,13 @@ echo
 # --reload: the dashboard already hot-reloads, and without the same on the API
 # a backend edit leaves the browser talking to stale code while everything
 # still returns 200. That mismatch is invisible and costly to debug.
-( cd backend && "$PY_ABS" -m uvicorn app.main:app --port "$API_PORT" --reload ) &
+#
+# --host 127.0.0.1 is uvicorn's default and is stated anyway: the security model
+# in app/security.py assumes loopback-only, and an assumption that lives in a
+# default is one nobody sees before overriding it. Serving the dashboard to a
+# conference network should be a deliberate edit here, not a flag someone adds
+# without reading what it exposes.
+( cd backend && "$PY_ABS" -m uvicorn app.main:app --host 127.0.0.1 --port "$API_PORT" --reload ) &
 npm run dev --prefix frontend -- --port "$UI_PORT" &
 
 wait

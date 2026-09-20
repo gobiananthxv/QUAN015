@@ -27,13 +27,14 @@ every result for the four ways backtests normally lie.
 | [Where the data comes from](#where-the-data-comes-from) | Why it reads a snapshot, not a live feed |
 | [What the platform found](#what-the-platform-found) | Real results, including the unflattering ones |
 | [Why you can trust the numbers](#why-you-can-trust-the-numbers) | Bias controls and the decisions behind them |
+| [The capability boundary](#the-capability-boundary) | Which five endpoints are fenced, and why only those |
 | [Project layout](#project-layout) | Where everything lives |
 | [Extending it](#extending-it) | Adding assets and strategies |
 | [Reference](#reference) | Endpoints, dependencies, data quality, troubleshooting |
 | [DEMO.md](DEMO.md) | A scripted three-minute walkthrough |
 | [PROJECT_PLAN.md](PROJECT_PLAN.md) | Phase plan and full decision log |
 
-**Status:** all eight phases complete · **355 tests passing** · all 19
+**Status:** all nine phases complete · **486 tests passing** · all 19
 problem-statement requirements delivered.
 
 ---
@@ -73,6 +74,25 @@ Press **Ctrl-C** to stop both servers.
 > **Use `localhost`, not `127.0.0.1`.** Vite's dev server binds to IPv6, so
 > `http://127.0.0.1:5173` will refuse the connection while `http://localhost:5173`
 > works.
+
+### Optional: lock down the endpoints that spend money
+
+Nothing below is needed to run the platform, and the defaults are safe on a
+machine serving only itself. If you demo on a network, set a token first — see
+[the capability boundary](#the-capability-boundary) for what it does and does
+not protect.
+
+```bash
+cp .env.example .env
+```
+
+Then set `QMAFIB_TOKEN` and `VITE_QMAFIB_TOKEN` in `.env` to the same value:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(24))"
+```
+
+`GET /health` reports whether the guard is active. It never reports the token.
 
 ### Verify everything works
 
@@ -288,7 +308,7 @@ That is a deliberate trade, and the reasons are in priority order:
 | **Reproducibility** | A backtest must give the same answer today and next week. If the underlying prices moved between runs, every reported figure would drift and the tests asserting exact values would fail daily. |
 | **Availability** | The platform works with no internet connection at all. |
 | **Speed** | ~14 ms from disk against ~500 ms over the network — and the Research tab runs dozens of backtests per click. |
-| **Test integrity** | 355 tests run offline in 9 seconds instead of hammering a provider. |
+| **Test integrity** | 486 tests run offline in about a minute instead of hammering a provider. |
 
 It is a *snapshot*, not a cache: there is no TTL, nothing expires, and nothing
 refreshes on a timer. To move the baseline forward, either press **↻ Refresh
@@ -725,7 +745,7 @@ adjustment, per-asset annualisation, and next-open execution.
 
 ### Testing
 
-**355 tests.** Values are hand-computed against known answers, not snapshotted
+**486 tests.** Values are hand-computed against known answers, not snapshotted
 from the implementation — a snapshot test locks in whatever bug exists.
 
 | Suite | Tests | Covers |
@@ -733,10 +753,156 @@ from the implementation — a snapshot test locks in whatever bug exists.
 | `test_indicators.py` | 31 | Hand-computed EMA recursion, Bollinger population std, Wilder ATR, plus 9 causality tests |
 | `test_metrics.py` | 32 | Closed-form cases: compounding, CAGR doubling, Sharpe by formula, hand-built drawdown paths |
 | `test_correlation_regime.py` | 27 | Panel alignment, matrix symmetry, regime label rules, regime causality |
-| `test_engine.py` | 43 | Look-ahead, cost arithmetic to the cent, equity curve vs trade log agreement |
-| `test_strategies.py` | 51 | Known-answer price paths, parameter validation, strategy causality |
+| `test_engine.py` | 63 | Look-ahead, cost arithmetic to the cent, equity curve vs trade log agreement, fractional sizing and financing |
+| `test_strategies.py` | 68 | Known-answer price paths, parameter validation, strategy causality |
 | `test_robustness.py` | 35 | Plateau detection against constructed surfaces with known answers |
 | `test_api.py` | 99 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
+| `test_security.py` | 61 | Token guard, token-bucket arithmetic against injected time, grid cap, recipient allowlist — and that the other thirteen endpoints stay open |
+| `test_email_report.py` | 17 | Address validation, archive assembly, SMTP dispatch with the transport mocked |
+| `test_chat.py`, `test_news_sentiment.py` | 26 | Provider contracts and error mapping, with every network call monkeypatched |
+
+---
+
+## The capability boundary
+
+Most security work on a project like this goes into the wrong place, because
+the wrong place is the place that *sounds* dangerous. This platform has a
+chatbot, so the reflex is to filter it for prompt injection. It has a REST API,
+so the reflex is to put a login in front of it.
+
+Neither reflex survives looking at what the endpoints can actually do.
+
+### What the threat model actually is
+
+Eighteen of the twenty-two endpoints read a committed CSV snapshot, do
+arithmetic, and return numbers. They hold no secrets, write nothing, and reach
+nothing. The worst an attacker gets from all eighteen combined is some of your
+CPU. Four are different, and the difference is not subtle:
+
+| | What it can do that the others cannot |
+|:--|:--|
+| `POST /api/report/send-email` | Package everything under `backend/output` and mail it, through an authenticated account, to an address the caller chooses |
+| `POST /api/data/refresh` | Overwrite the snapshot every published figure in this README is computed from |
+| `POST /api/chat` | Spend a metered AI provider key, once per request |
+| `POST /api/news-sentiment/analyze-{text,image}` | The same, on a second provider |
+
+That table is the whole security design. A control that does not sit in front
+of one of those rows is not protecting anything.
+
+### The chatbot is the wrong thing to worry about
+
+Worth stating plainly, because the intuition is so strong the other way. The
+assistant in [`chat.py`](backend/app/chat.py) has **no tools**. It receives
+`page_json` and a question, returns markdown, and can reach nothing else — no
+file access, no function calling, no ability to start a backtest or move a
+position. A completely successful prompt injection against it yields a rude
+paragraph.
+
+What that endpoint *can* do is spend somebody's money, once per request,
+without being asked who is calling. So it is guarded — for cost, not for
+content. Filtering its inputs for jailbreak strings would have been effort
+spent on the failure mode that does not exist, in front of the one that does.
+
+### The email endpoint was the real hole
+
+`POST /api/report/send-email` took an arbitrary recipient, zipped the entire
+contents of `backend/output`, and sent it through the configured Gmail account.
+Unauthenticated, unlimited, and writing an `.eml` copy to disk on every call.
+That is three separate things at once:
+
+- an **exfiltration primitive** — name your own address, receive the archive
+- an **open relay** signed with the sender's own reputation
+- an **unbounded disk write**
+
+None of it required a clever attack. The feature worked exactly as designed;
+the design simply never said who was allowed to receive the output. It is now
+the most restricted endpoint in the platform, and its allowlist fails closed:
+unconfigured, the only permitted recipient is the mailbox the report is sent
+*from*. You can mail the archive to yourself, and to nobody else, without
+setting anything.
+
+### What was built
+
+One module — [`security.py`](backend/app/security.py) — and five route
+decorations. Deliberately not a framework.
+
+| Control | Applies to | Default with no configuration |
+|:--|:--|:--|
+| Shared-secret header | the 5 effectful endpoints | **Off.** Documented, and reported by `/health` |
+| Token bucket, per route and per client | the 5, plus robustness | **On.** Needs no configuration to be useful |
+| Recipient allowlist | send-email | **On, fails closed** — the SMTP sender only |
+| Grid cell cap (400) | robustness | **On.** A `100×100` grid is 10,000 backtests in one request |
+| Concurrent sweep bound (2) | robustness | **On.** Otherwise a sweep can starve `/health` |
+
+The asymmetry in that last column is the only interesting design decision here.
+Rate limits and the allowlist are always on, because the things they prevent —
+a drained provider balance, a suspended mail account — are exactly the things
+nobody remembers to configure against. The token is off by default, because a
+fresh `git clone` that refuses to run teaches people to disable security rather
+than configure it, and because the server binds `127.0.0.1`.
+
+That binding is now written explicitly in `run.sh` and `run.ps1` even though it
+is uvicorn's default. An assumption that lives in a default is one nobody reads
+before overriding it, and `--host 0.0.0.0` on conference wifi is a one-word
+change that silently invalidates the entire paragraph above it.
+
+### What this is not
+
+**It is not authentication.** The token reaches the browser as a Vite variable,
+which means it is baked into the bundle and readable in devtools by anyone
+sitting at the dashboard. It raises the cost of drive-by and scripted abuse
+against a tool bound to loopback. It does not defend against someone with
+access to the machine, and the module's own docstring says so rather than
+leaving the reader to discover it.
+
+**There is no login, no JWT, no RBAC, no TLS.** This is a single-user local
+research tool. Those would be visible effort spent on a threat model that does
+not apply, and each one is a component that can be wrong. The honest security
+posture is a small fence around four dangerous things and a clear statement of
+what is outside it.
+
+**`/health` publishes the state of the guards, never the secret.** A deployment
+that believes it is protected and is not is worse off than one that knows it is
+open:
+
+```json
+"security": {
+  "token_required": false,
+  "token_header": "X-QMAFIB-Token",
+  "rate_limits": {"refresh": "3/300s", "email": "3/3600s", "chat": "20/60s",
+                  "sentiment": "10/60s", "robustness": "30/60s"},
+  "max_grid_cells": 400,
+  "report_recipients_configured": 1
+}
+```
+
+### Two refusals, two status codes
+
+One endpoint can refuse for two unrelated reasons, and they call for completely
+different advice. A **401** is always a credential problem — no token, or the
+wrong one. A **403** is always the recipient policy: you are who you say, and
+that address still is not approved. The dashboard branches on the code, so it
+can say which instead of showing the API's own text, which names environment
+variables at a reader who does not run the server.
+
+The rate limit is also listed *before* the token check on every guarded route.
+That looks backwards and is not: dependencies resolve in order and the first to
+raise wins, so checking the token first would hand out unlimited failed attempts
+for free. This way a guesser runs out of requests.
+
+### The tests that matter most are the negative ones
+
+Of the 61 tests in [`test_security.py`](backend/tests/test_security.py), the
+ones worth reading first assert what is **not** guarded: that `/api/assets`,
+`/api/metrics`, `/api/ohlcv`, `/api/strategies` and `/api/panel` return 200
+with the strictest configuration active, and that sixty consecutive reads are
+never rate-limited.
+
+A security layer that quietly puts the read-only dashboard behind a token has
+broken the product in order to protect the parts that were never at risk. That
+failure is much easier to ship than the one it replaces, because everything
+still works on the machine where the token is configured. Those tests exist to
+catch the fence spreading.
 
 ---
 
@@ -761,9 +927,14 @@ backend/
       robustness.py        Parameter/cost/period sweeps, regime attribution
     api/
       routes.py            REST endpoints
+      chat_routes.py       Assistant proxy
+      news_sentiment_routes.py
       serialise.py         inf/NaN -> null, numpy -> native
+    chat.py                Featherless client
+    email_service.py       Report archive + SMTP dispatch
+    security.py            Capability boundary: token, rate limits, allowlist
     main.py                FastAPI app, CORS, /health
-  tests/                   355 tests
+  tests/                   486 tests
   scripts/                 One runnable gate per phase
   data_snapshot/           Committed CSV market data
 frontend/
@@ -783,6 +954,11 @@ docs/
 **Layering rule:** `data` does not import `analytics`; `analytics` does not
 import `backtest`; nothing below the API layer imports FastAPI. The quant core
 is importable and testable without a running server.
+
+`security.py` sits *beside* the API rather than under it — it is the only
+non-`api/` module that imports FastAPI, because dependencies and `HTTPException`
+are what it exists to produce. Nothing in `data`, `analytics` or `backtest`
+imports it, so the rule above still holds where it matters.
 
 ---
 
@@ -842,9 +1018,14 @@ Two things to register if the strategy sizes rather than times:
 
 Interactive docs at `http://localhost:8000/docs`.
 
+🔒 marks the five endpoints behind the
+[capability boundary](#the-capability-boundary) — they need `X-QMAFIB-Token`
+when one is configured, and are rate-limited whether or not it is. Everything
+else is open by design.
+
 | Method | Path | Returns |
 |:--|:--|:--|
-| `GET` | `/health` | Liveness, asset list, disclaimer |
+| `GET` | `/health` | Liveness, asset list, disclaimer, and which guards are active |
 | `GET` | `/api/assets` | Asset registry and snapshot state |
 | `GET` | `/api/strategies` | Strategy catalogue with defaults |
 | `GET` | `/api/ohlcv?asset=` | Validated bars + quality report |
@@ -855,13 +1036,15 @@ Interactive docs at `http://localhost:8000/docs`.
 | `GET` | `/api/regime?asset=` | Regime labels over time |
 | `GET` | `/api/panel` | Aligned multi-asset close panel |
 | `GET` | `/api/backtest/regime-attribution` | Strategy vs benchmark by regime |
-| `POST` | `/api/data/refresh` | **The only endpoint that touches the network.** Re-downloads the snapshot; skips assets fetched within the last day unless `force` |
+| `POST` | 🔒 `/api/data/refresh` | **The only endpoint that touches the market-data provider.** Re-downloads the snapshot; skips assets fetched within the last day unless `force` |
 | `POST` | `/api/backtest` | One strategy + benchmark + trade log; optional `start`/`end` |
 | `POST` | `/api/backtest/compare` | Every strategy against one benchmark; optional `start`/`end` |
-| `POST` | `/api/backtest/robustness` | Surface, plateau verdict, cost + period sweeps |
+| `POST` | `/api/backtest/robustness` | Surface, plateau verdict, cost + period sweeps. Rate-limited and grid-capped, but needs no token: it spends CPU, not money |
+| `POST` | 🔒 `/api/report/send-email` | Mails the contents of `backend/output`. Recipient must be on the allowlist, which defaults to the SMTP sender |
+| `POST` | 🔒 `/api/chat` | Dashboard assistant, proxied to Featherless |
 | `GET` | `/api/news-sentiment/health` | Liveness + whether a live analysis is configured |
-| `POST` | `/api/news-sentiment/analyze-text` | Live Gemini analysis of a pasted news article |
-| `POST` | `/api/news-sentiment/analyze-image` | Live Gemini OCR + analysis of a news screenshot |
+| `POST` | 🔒 `/api/news-sentiment/analyze-text` | Live Gemini analysis of a pasted news article |
+| `POST` | 🔒 `/api/news-sentiment/analyze-image` | Live Gemini OCR + analysis of a news screenshot |
 | `POST` | `/api/news-sentiment/chart-data` | Recent price history for dependency charts, from the snapshot |
 | `GET` | `/api/news-sentiment/sentiment-history` | Articles analysed in this process (in-memory) |
 

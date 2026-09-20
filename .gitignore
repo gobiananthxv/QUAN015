@@ -11,3 +11,8 @@ dist/
 # frontend build output
 frontend/dist/
 frontend/node_modules/
+
+# Audit copies of sent reports. Each one attaches the whole of backend/output,
+# so they run to several MB apiece, and the filename carries the recipient's
+# address. Useful locally, not something to commit.
+backend/output/emails/

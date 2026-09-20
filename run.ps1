@@ -30,8 +30,13 @@ Write-Output 'API       -> http://localhost:8000  (docs at /docs)'
 Write-Output 'Dashboard -> http://localhost:5173'
 Write-Output ''
 
+# --host 127.0.0.1 is uvicorn's default and is stated anyway: the security model
+# in app/security.py assumes loopback-only, and an assumption that lives in a
+# default is one nobody sees before overriding it. Serving the dashboard to a
+# conference network should be a deliberate edit here, not a flag someone adds
+# without reading what it exposes.
 $api = Start-Process -PassThru -NoNewWindow -FilePath (Resolve-Path $py) `
-    -ArgumentList '-m','uvicorn','app.main:app','--port','8000','--reload' -WorkingDirectory 'backend'
+    -ArgumentList '-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8000','--reload' -WorkingDirectory 'backend'
 try {
     npm run dev --prefix frontend
 } finally {

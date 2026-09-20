@@ -344,11 +344,120 @@ every axis. It does not. The prototype was wrong; the audited engine is the
 number that counts, and the prototype's figure is recorded here only so nobody
 resurrects it from the conversation history.
 
+
+### Phase 9 — Capability boundary · 1 h · ✅ COMPLETE
+Delivered: [`app/security.py`](backend/app/security.py) — a shared-secret
+dependency, a per-route token-bucket rate limiter, a robustness grid cap and
+concurrency bound, and a fail-closed recipient allowlist on the report mailer —
+applied to exactly the five endpoints that have effects outside this process.
+
+**The gap this closes.** Eighteen of the twenty-two endpoints read a committed
+CSV and do arithmetic; abusing them costs CPU. Four reach outside with the
+operator's own credentials, and one of those — `POST /api/report/send-email` —
+took an arbitrary recipient, zipped the whole of `backend/output`, and mailed
+it through an authenticated Gmail account with no rate limit. That is an
+exfiltration primitive, an open relay, and an unbounded disk write in a single
+unauthenticated endpoint.
+
+**What was deliberately rejected.** A login screen, JWTs, RBAC and TLS, all of
+which are visible effort against a threat model that does not apply to a
+single-user tool bound to loopback. Prompt-injection filtering on the assistant
+was rejected for a sharper reason: the assistant has no tools, so a successful
+injection yields a rude paragraph. The endpoint needed guarding for **cost**,
+not content, and the controls are sized to that.
+
+**Verification gate — passed.**
+1. ✅ 484 tests pass, of which 59 are new in `test_security.py`. Seven
+   pre-existing tests failed on first run — five refresh tests sharing a rate
+   budget, two email tests meeting the allowlist — and all seven were genuine
+   consequences of the guards, fixed in the tests and in one case in the route.
+2. ✅ All five `verify.sh` script gates pass; TypeScript clean; frontend builds.
+3. ✅ Checked against a **live server**, not only TestClient: `/health` reports
+   `token_required: true`, a guarded endpoint answers 401 both without the
+   header and with a wrong one, an unguarded read answers 200, and the preflight
+   returns `access-control-allow-headers: x-qmafib-token`.
+4. ✅ The rate limiter was confirmed live: the 21st call inside the window
+   returned 429 with a `Retry-After` header, the first twenty did not.
+
+**A bug the change surfaced.** The frontend's `request` helper spread `...init`
+*after* its headers, so `analyzeImage` disabled the JSON content type by passing
+`headers: undefined` — which worked only because of that ordering. Adding the
+token header required merging headers instead of replacing them, which would
+have silently broken every image upload. The fix moves the decision into the
+helper: a `FormData` body drops the JSON content type on its own, so a caller
+cannot forget and no caller has to know.
+
+**What is honestly not covered.** The token reaches the browser as a Vite
+variable and is readable in devtools. It raises the cost of scripted abuse; it
+is not authentication, and `security.py` says so in its own docstring rather
+than leaving a reader to find out. The rate limiter is per-process and
+in-memory, so a multi-worker deployment would multiply every budget by the
+worker count — correct for the single-process server this ships as, and wrong
+the moment that changes.
+
 ---
+
 
 ## 6. Decision log
 
 Recorded so the reasoning survives the hackathon.
+
+**D40 — Guard capabilities, not endpoints (Phase 9).**
+Every endpoint was classified as pure (reads the snapshot, computes, returns) or
+effectful (spends a metered key, sends mail, overwrites the snapshot, or burns
+unbounded CPU). Only the effectful five are fenced. The rejected alternative —
+a blanket auth middleware — is the easier thing to build and the worse thing to
+ship: it puts the read-only dashboard behind configuration to protect endpoints
+that hold nothing, and it fails invisibly, because everything still works on the
+machine where the token is set. `test_security.py` therefore asserts the
+*absence* of the guard on six read endpoints as explicitly as its presence on
+the five, so a future change that spreads the fence fails the suite.
+
+**D41 — The controls are asymmetric on purpose (Phase 9).**
+Rate limits and the recipient allowlist are always on; the shared secret is off
+until configured. The reasoning is about what an unconfigured install should do.
+A fresh clone that refuses to run teaches people to disable security rather than
+configure it, and the server binds loopback, so an inert token guard exposes
+nothing. A drained provider balance or a suspended mail account, by contrast, is
+precisely what nobody remembers to configure against — so those controls cannot
+be left to a variable somebody forgets. The allowlist goes further and fails
+closed: unset, it permits only the SMTP sender, which keeps the feature working
+for "mail me the run output" while removing the exfiltration path entirely.
+
+**D42 — The assistant is guarded for cost, not for content (Phase 9).**
+The obvious "AI security" work here is prompt-injection filtering, and it was
+rejected. `chat.py` has no tools: it takes `page_json` and a question, returns
+markdown, and can reach nothing — no files, no function calls, no ability to
+start a backtest. A fully successful injection produces a rude paragraph. What
+the endpoint can actually do is spend a metered key once per request without
+asking who is calling, so it gets a token and a budget. Building an input filter
+would have been effort spent in front of the failure mode that does not exist,
+while the one that does stayed open.
+
+**D43 — X-Forwarded-For is ignored by the rate limiter (Phase 9).**
+Honouring it is the conventional thing to do and is wrong without a trusted
+proxy in front of the server: any caller could set their own value and mint a
+fresh budget per request, which is an opt-out disguised as a feature. There is
+no proxy here, so `client_key` reads `request.client.host` only. A regression
+test rotates the header across the budget and asserts the 429 still arrives.
+
+**D45 — 401 for a bad credential, 403 only for the recipient policy (Phase 9).**
+Both refusals originally answered 403, which made them indistinguishable to the
+dashboard — and "your token is wrong" and "that address is not approved" call
+for completely different advice. A wrong token is a credential that would
+succeed if corrected, which is what 401 means, so the token guard now answers
+401 in both its failure cases and 403 belongs exclusively to the mail
+allowlist. The report modal branches on the code to say which, instead of
+showing the API's own text, which names environment variables at a reader who
+does not run the server.
+
+**D44 — The loopback binding is written down even though it is the default
+(Phase 9).**
+`run.sh` and `run.ps1` now pass `--host 127.0.0.1` explicitly. It changes no
+behaviour. The reason is that `security.py` assumes loopback in its own
+reasoning, and an assumption that lives in a framework default is one nobody
+reads before overriding it — `--host 0.0.0.0` to demo on conference wifi is a
+one-word change that silently invalidates the entire threat model.
 
 **D36 — A signal is a target exposure, not a direction (Phase 8).**
 `generate_signals` returns any real number: `1.0` fully invested, `0.5` half,
@@ -718,3 +827,6 @@ production SLOs.
 - ✅ Dashboard covering all 8 required visualisations
 - ✅ Core maths covered by tests that verify values, not just absence of crashes
 - ✅ Runs end-to-end offline from the committed cache
+- ✅ Every endpoint with effects outside the process is rate-limited, and gated
+     on a shared secret when one is configured — with the read-only dashboard
+     deliberately left open, and tests asserting it stays that way

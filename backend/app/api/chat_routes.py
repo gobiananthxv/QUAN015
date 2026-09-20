@@ -12,10 +12,11 @@ can distinguish "set up the key" from "the model is down".
 from __future__ import annotations
 
 import requests
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..chat import ChatKeyError, ChatProviderError, chat_completion
+from ..security import rate_limit, require_token
 
 router = APIRouter(prefix="/chat", tags=["chatbot"])
 
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/chat", tags=["chatbot"])
 
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    content: str = Field(max_length=8000)
 
 
 class ChatIn(BaseModel):
@@ -37,15 +38,27 @@ class ChatIn(BaseModel):
 
     page_json: dict = Field(default_factory=dict)
     user_prompt: str = Field(min_length=1, max_length=4000)
-    history: list[ChatMessage] = Field(default_factory=list)
+    # Bounded because the whole list is forwarded to a metered provider on every
+    # turn: an unbounded history makes one request arbitrarily expensive.
+    history: list[ChatMessage] = Field(default_factory=list, max_length=40)
 
 
 # ---------------------------------------------------------------- assistant
 
 
-@router.post("")
+@router.post(
+    "",
+    dependencies=[Depends(rate_limit("chat")), Depends(require_token)],
+)
 def post_chat(body: ChatIn) -> dict:
-    """Proxy the dashboard state + question to the Featherless AI assistant."""
+    """Proxy the dashboard state + question to the Featherless AI assistant.
+
+    Guarded for cost, not for content. The assistant has no tools: it reads
+    ``page_json``, writes markdown, and can reach nothing else, so a successful
+    prompt injection buys an attacker a rude paragraph. What it *can* do is
+    spend a metered provider key, once per request, on somebody else's budget —
+    which is the threat the token and the rate budget are sized against.
+    """
     try:
         reply = chat_completion(
             body.page_json,

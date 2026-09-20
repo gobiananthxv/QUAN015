@@ -238,11 +238,38 @@ def create_report_email(
     return msg
 
 
+def _display_path(path: Path) -> str:
+    """Render a saved path relative to ``backend/`` when it lives there.
+
+    ``relative_to`` raises ``ValueError`` for anything outside that tree, which
+    reached the route as a 400 and reported "invalid email address" for a
+    perfectly valid one. The tidier relative form is a presentation detail and
+    should never be able to fail the send that already happened.
+    """
+    try:
+        return str(path.relative_to(_BACKEND_DIR))
+    except ValueError:
+        return str(path)
+
+
 def send_report_email(to_email: str) -> dict[str, Any]:
-    """Validate email, package backend/output files, and send via SMTP."""
+    """Validate email, package backend/output files, and send via SMTP.
+
+    The recipient is checked against the allowlist here as well as in the route.
+    That is deliberate duplication: this function is exported, it attaches
+    everything under ``backend/output``, and the next caller to import it will
+    not have the route's dependencies in front of it.
+    """
+    from .security import recipient_allowed
+
     clean_email = to_email.strip()
     if not validate_email(clean_email):
         raise ValueError(f"Invalid email address: '{to_email}'. Must match regex format.")
+    if not recipient_allowed(clean_email):
+        raise PermissionError(
+            f"'{clean_email}' is not an approved report recipient. "
+            "Set REPORT_EMAIL_ALLOWLIST to authorise it."
+        )
 
     output_dir = get_output_dir()
     files = collect_output_files(output_dir)
@@ -303,5 +330,5 @@ def send_report_email(to_email: str) -> dict[str, Any]:
         "files_count": len(files),
         "files": [f["rel_path"] for f in files],
         "zip_size_bytes": len(zip_data),
-        "saved_local_copy": str(eml_path.relative_to(_BACKEND_DIR)),
+        "saved_local_copy": _display_path(eml_path),
     }

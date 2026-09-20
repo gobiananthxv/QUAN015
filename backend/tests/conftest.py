@@ -10,6 +10,21 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.security import limiter  # noqa: E402  (needs the path insert above)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_budget():
+    """Give every test the full rate-limit budget.
+
+    The limiter is process-global and keys on client address, which is the same
+    string for every ``TestClient`` request. Without this, the fourth test to
+    call a guarded endpoint fails with a 429 caused by the three before it —
+    a failure that depends on test ordering and says nothing about the code.
+    """
+    limiter.reset()
+    yield
+
 
 @pytest.fixture
 def linear_up() -> pd.Series:

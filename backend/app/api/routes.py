@@ -1,19 +1,22 @@
 """REST API.
 
-Fourteen endpoints here, plus ``/health`` on the app itself. Every response passes through ``serialise.clean`` so ``inf``
-and ``nan`` leave as ``null`` rather than as tokens ``JSON.parse`` rejects.
+Fifteen endpoints here, plus ``/health`` on the app itself. Every response
+passes through ``serialise.clean`` so ``inf`` and ``nan`` leave as ``null``
+rather than as tokens ``JSON.parse`` rejects.
 
 Read endpoints are GETs with query parameters. Backtests are POSTs because they
 carry a nested configuration object, not because they mutate anything.
 
-Exactly one endpoint has side effects and exactly one touches the network:
-``POST /data/refresh``, which re-downloads market data and overwrites the
-committed snapshot. Everything else reads that snapshot from disk, which is what
-keeps a backtest reproducible between runs.
+Two endpoints reach outside this process, and both are guarded by
+``app.security``: ``POST /data/refresh`` re-downloads market data and overwrites
+the committed snapshot, and ``POST /report/send-email`` mails the contents of
+``backend/output`` through an authenticated account. Everything else reads the
+snapshot from disk, which is what keeps a backtest reproducible between runs —
+and is why those thirteen need no fence beyond their own arithmetic.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ..analytics.correlation import (
@@ -45,6 +48,13 @@ from ..backtest.robustness import (
 from ..backtest.strategies import REGISTRY, list_strategies
 from ..config import ASSETS, get_asset
 from ..data.store import load_asset, load_panel, quality_report, refresh, snapshot_status
+from ..security import (
+    check_grid_size,
+    rate_limit,
+    recipient_allowed,
+    require_token,
+    sweep_slot,
+)
 from .serialise import clean, frame_to_records, series_to_pairs
 
 router = APIRouter()
@@ -152,7 +162,10 @@ def get_assets() -> dict:
     )
 
 
-@router.post("/data/refresh")
+@router.post(
+    "/data/refresh",
+    dependencies=[Depends(rate_limit("refresh")), Depends(require_token)],
+)
 def post_refresh(body: RefreshIn | None = None) -> dict:
     """Re-download market data from the provider and overwrite the snapshot.
 
@@ -163,6 +176,10 @@ def post_refresh(body: RefreshIn | None = None) -> dict:
     Market data here is daily, so an asset fetched within the last 24 hours is
     skipped rather than re-downloaded — a second fetch would rewrite identical
     rows. Pass ``force`` to override.
+
+    Guarded: this is the only endpoint that overwrites the snapshot every
+    published figure is computed from, so it carries the shared-secret
+    requirement as well as the tightest rate budget in the API.
 
     Returns 502 only if *every* requested asset failed — a partial success, or a
     run where everything was simply already current, still returns 200 with the
@@ -430,12 +447,20 @@ def post_compare(body: CompareIn) -> dict:
     )
 
 
-@router.post("/backtest/robustness")
+@router.post(
+    "/backtest/robustness",
+    dependencies=[Depends(rate_limit("robustness"))],
+)
 def post_robustness(body: RobustnessIn) -> dict:
     """Parameter surface, plateau verdict, cost decay and period stability.
 
     The heaviest endpoint by far — a 25-cell grid runs ~25 backtests and takes
     roughly 300 ms. The dashboard shows a loading state for this one.
+
+    Cost here is multiplicative in the caller's grid, so the grid is capped and
+    concurrent sweeps are bounded. No shared secret: this spends CPU, not money,
+    and requiring a token would put the dashboard's most illustrative view
+    behind configuration for no gain.
     """
     key = _asset_or_404(body.asset)
     _strategy_or_404(body.strategy)
@@ -445,11 +470,13 @@ def post_robustness(body: RobustnessIn) -> dict:
     axes = list(grid)
     if len(axes) != 2:
         raise HTTPException(422, "grid must contain exactly two parameters")
+    check_grid_size(grid)
 
     try:
-        sweep = parameter_sweep(key, body.strategy, grid, config=cfg, start=body.start, end=body.end)
-        costs = cost_sweep(key, body.strategy, config=cfg, start=body.start, end=body.end)
-        periods = period_sweep(key, body.strategy, config=cfg, start=body.start, end=body.end)
+        with sweep_slot():
+            sweep = parameter_sweep(key, body.strategy, grid, config=cfg, start=body.start, end=body.end)
+            costs = cost_sweep(key, body.strategy, config=cfg, start=body.start, end=body.end)
+            periods = period_sweep(key, body.strategy, config=cfg, start=body.start, end=body.end)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
 
@@ -523,17 +550,48 @@ def get_panel() -> dict:
 
 
 class SendReportIn(BaseModel):
-    email: str
+    email: str = Field(min_length=3, max_length=254)
 
 
-@router.post("/report/send-email")
+@router.post(
+    "/report/send-email",
+    dependencies=[Depends(rate_limit("email")), Depends(require_token)],
+)
 def post_send_report(body: SendReportIn) -> dict:
-    """Send all files and folders in backend/output to the specified email address."""
-    from ..email_service import send_report_email
+    """Send all files and folders in backend/output to the specified email address.
+
+    The most dangerous endpoint in the API, and the reason the capability
+    boundary exists: it packages everything under ``backend/output`` and mails
+    it through an authenticated account to an address chosen by the caller.
+    Unguarded, that is an exfiltration primitive and an open relay wearing the
+    reputation of your own mailbox.
+
+    The recipient is therefore checked against an allowlist *before* anything is
+    read or packaged, and the allowlist fails closed: with nothing configured it
+    contains only the sending mailbox, so the report can be mailed to you and
+    nowhere else.
+    """
+    from ..email_service import send_report_email, validate_email
+
+    # Shape before permission, deliberately. Both checks reject, but a malformed
+    # address is the caller's typo (400) while a well-formed one that is not
+    # approved is a policy decision (403) — and asking whether "not-an-email" is
+    # on the allowlist answers a question that means nothing.
+    if not validate_email(body.email):
+        raise HTTPException(400, f"Invalid email address: '{body.email}'.")
+    if not recipient_allowed(body.email):
+        raise HTTPException(
+            403,
+            f"'{body.email}' is not an approved report recipient. The report "
+            "archive may only be sent to addresses listed in "
+            "REPORT_EMAIL_ALLOWLIST (defaulting to the SMTP sender).",
+        )
 
     try:
         result = send_report_email(body.email)
         return clean(result)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from None
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     except RuntimeError as exc:

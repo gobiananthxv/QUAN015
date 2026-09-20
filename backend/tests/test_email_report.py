@@ -128,7 +128,21 @@ class TestReportEndpoint:
         assert response.status_code == 400
         assert "Invalid email address" in response.json()["detail"]
 
-    def test_send_report_success_mocked_smtp(self):
+    def test_send_report_success_mocked_smtp(self, monkeypatch, tmp_path):
+        # The recipient allowlist fails closed, so a test that expects delivery
+        # has to say who delivery is allowed to — exactly as a real deployment
+        # does. Without this the endpoint correctly answers 403.
+        monkeypatch.setenv("REPORT_EMAIL_ALLOWLIST", "quant.researcher@test.com")
+
+        # Redirect the archive at a temporary directory. Against the real one
+        # this test packaged every artifact in backend/output and wrote a ~5 MB
+        # .eml audit copy back into it on every run — the suite was growing the
+        # repository it was testing, and the next run then had more to zip.
+        (tmp_path / "report.csv").write_text("date,value\n2024-01-01,1\n")
+        (tmp_path / "nested").mkdir()
+        (tmp_path / "nested" / "plot.txt").write_text("placeholder")
+        monkeypatch.setattr("app.email_service.get_output_dir", lambda: tmp_path)
+
         with patch("smtplib.SMTP") as mock_smtp:
             instance = MagicMock()
             mock_smtp.return_value.__enter__.return_value = instance

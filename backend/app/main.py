@@ -15,6 +15,7 @@ from .api.chat_routes import router as chat_router
 from .api.news_sentiment_routes import router as news_sentiment_router
 from .api.routes import router
 from .config import ASSETS
+from .security import security_status
 
 DISCLAIMER = (
     "Research and historical analysis only. Backtested performance is computed "
@@ -52,5 +53,16 @@ app.include_router(chat_router, prefix="/api")
 
 @app.get("/health")
 def health() -> dict:
-    """Liveness check, plus enough context to confirm the cache is warm."""
-    return {"status": "ok", "assets": list(ASSETS), "disclaimer": DISCLAIMER}
+    """Liveness check, plus enough context to confirm the cache is warm.
+
+    ``security`` reports which guards are actually active, never the token
+    itself. A deployment that believes it is protected and is not is a worse
+    position than one that knows it is open, so the state is published rather
+    than assumed.
+    """
+    return {
+        "status": "ok",
+        "assets": list(ASSETS),
+        "disclaimer": DISCLAIMER,
+        "security": security_status(),
+    }

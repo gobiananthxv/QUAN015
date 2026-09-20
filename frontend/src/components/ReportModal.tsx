@@ -1,7 +1,37 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, type SendReportResult } from '../api'
+import { ApiError, api, type SendReportResult } from '../api'
 
 const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9]+([.-][a-zA-Z0-9]+)*\.[a-zA-Z]{2,}$/
+
+/**
+ * Turn a refusal into something the person reading it can act on.
+ *
+ * The API's own messages name environment variables, which is right for
+ * whoever runs the platform and wrong for whoever is standing at the dashboard.
+ * The distinction the codes carry is what makes this possible: 401 is always a
+ * credential problem and 403 is always the recipient policy, so neither case
+ * has to guess which advice to give.
+ *
+ * Anything unrecognised falls through to the server's text rather than a
+ * generic apology — an unexpected failure is more useful stated than softened.
+ */
+function reportErrorMessage(err: unknown): string {
+  if (!(err instanceof ApiError)) {
+    return err instanceof Error ? err.message : 'Failed to send report email.'
+  }
+  switch (err.status) {
+    case 401:
+      return 'This dashboard is not authorised to send reports. Check that its access token matches the server.'
+    case 403:
+      return 'That address is not approved to receive reports. Ask whoever runs this platform to add it.'
+    case 429:
+      return 'Too many reports requested recently. Please try again in a few minutes.'
+    case 503:
+      return 'Email delivery is not configured on the server yet.'
+    default:
+      return err.message
+  }
+}
 
 interface ReportModalProps {
   open: boolean
@@ -58,8 +88,7 @@ export function ReportModal({ open, onClose }: ReportModalProps) {
       const res = await api.sendReport(trimmed)
       setResult(res)
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to send report email.'
-      setError(msg)
+      setError(reportErrorMessage(err))
     } finally {
       setLoading(false)
     }

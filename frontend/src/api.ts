@@ -10,6 +10,19 @@
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
+/**
+ * Shared secret for the endpoints that have side effects — refreshing the
+ * snapshot, mailing a report, and anything that spends a provider key. Sent on
+ * every request rather than only those five, because the alternative is a
+ * second list of guarded paths here that has to stay in step with the backend.
+ *
+ * This is not authentication and is not treated as such: a Vite variable is
+ * baked into the bundle and readable in devtools. It raises the cost of
+ * scripted abuse against a server bound to localhost, which is the whole of
+ * what it claims to do.
+ */
+const TOKEN = import.meta.env.VITE_QMAFIB_TOKEN ?? ''
+
 export type Num = number | null
 
 export interface Asset {
@@ -306,9 +319,18 @@ class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
+    // A multipart body must carry the boundary the browser generates, so the
+    // JSON content type is dropped for FormData — detected from the body rather
+    // than asked for by the caller, because a caller that forgets gets a request
+    // the server cannot parse. The token header survives either way.
+    const isMultipart = init?.body instanceof FormData
     response = await fetch(`${BASE}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
       ...init,
+      headers: {
+        ...(isMultipart ? {} : { 'Content-Type': 'application/json' }),
+        ...(TOKEN ? { 'X-QMAFIB-Token': TOKEN } : {}),
+        ...init?.headers,
+      },
     })
   } catch {
     throw new ApiError(0, `Cannot reach the API at ${BASE}. Is the backend running?`)
@@ -434,11 +456,11 @@ export const api = {
   analyzeImage: (file: File, provider: 'google' | 'feather' = 'google') => {
     const form = new FormData()
     form.append('image', file)
-    // Multipart: the browser must set its own boundary, so drop the JSON header.
+    // `request` detects the FormData body and drops the JSON content type
+    // itself, so the browser can set its own multipart boundary.
     return request<NewsAnalysis>(`/api/news-sentiment/analyze-image?provider=${provider}`, {
       method: 'POST',
       body: form,
-      headers: undefined,
     })
   },
 
