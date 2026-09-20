@@ -289,10 +289,71 @@ def main() -> None:
         ok(f"  {label} distribution saved → {plots_dir}/{ticker}_regime_distribution.png")
 
     # =========================================================================
+    # STEP 8: Future Regime Forecast
+    # =========================================================================
+    banner("STEP 8 — Future Regime Forecast (HMM Only)")
+    from forecast.regime_forecaster import RegimeForecaster
+
+    forecaster = RegimeForecaster(hmm_result)
+
+    # Compute and print prediction horizon
+    horizon = forecaster.prediction_horizon(n_steps=120)
+    print()
+    ok(f"Prediction horizon (conservative)  : ~{horizon['conservative']} trading days")
+    ok(f"Prediction horizon (max_prob)       : ~{horizon['max_prob_horizon']} trading days")
+    ok(f"Prediction horizon (KL divergence)  : ~{horizon['kl_horizon']} trading days")
+    print()
+    info("Interpreting horizon:")
+    print(f"    Within ~{horizon['conservative']} days → regime forecast is confident")
+    print(f"    Beyond ~{horizon['conservative']} days → converges to long-run base rates")
+
+    # Print forecast table
+    n_forecast = 60
+    forecast_df = forecaster.forecast(n_steps=n_forecast)
+    stat_dist   = forecaster.stationary_distribution()
+
+    print(f"\n  {BOLD}Regime probability forecast (next {n_forecast} trading days):{RESET}")
+    print(f"  {'Day':>5}  " + "  ".join(f"{c:>16}" for c in forecast_df.columns))
+    print("  " + "─" * (7 + 18 * len(forecast_df.columns)))
+    for day in [1, 5, 10, 21, 42, 60]:
+        if day <= n_forecast:
+            row = forecast_df.loc[day]
+            vals = "  ".join(f"{v:>15.1%}" for v in row)
+            print(f"  {day:>5}  {vals}")
+    print("  " + "─" * (7 + 18 * len(forecast_df.columns)))
+    stat_vals = "  ".join(
+        f"{stat_dist.get(c, 0):>15.1%}" for c in forecast_df.columns
+    )
+    print(f"  {'∞ (SR)':>5}  {stat_vals}   ← stationary (long-run base rate)")
+
+    # Export forecast CSV
+    forecast_csv = out / f"{ticker}_hmm_forecast.csv"
+    forecast_df.to_csv(forecast_csv)
+    ok(f"\n  Forecast probabilities exported → {forecast_csv}")
+
+    # Export confidence decay CSV
+    decay_df = forecaster.confidence_decay(n_steps=n_forecast)
+    decay_csv = out / f"{ticker}_hmm_confidence_decay.csv"
+    decay_df.to_csv(decay_csv)
+    ok(f"  Confidence decay exported → {decay_csv}")
+
+    # Generate forecast chart
+    info("Rendering forecast dashboard …")
+    forecast_plot = str(plots_dir / f"{ticker}_hmm_forecast.png")
+    forecaster.plot(
+        n_steps=n_forecast,
+        n_paths=500,
+        save_path=forecast_plot,
+        show=args.show_plots,
+    )
+    ok(f"  Forecast chart saved → {forecast_plot}")
+
+    # =========================================================================
     # Summary
     # =========================================================================
     elapsed = time.perf_counter() - t_start
     banner(f"ALL DONE  ({elapsed:.1f}s)")
+
 
     print(f"\n  {BOLD}Output files in: {out.resolve()}/{RESET}\n")
     for f in sorted(out.rglob("*")):
@@ -305,6 +366,8 @@ def main() -> None:
     print(f"    GMM current regime  : {BOLD}{gmm_result.current_regime}{RESET}")
     print(f"    HMM n_states chosen : {hmm_result.n_states}")
     print(f"    GMM n_states chosen : {gmm_result.n_states}")
+    print(f"    HMM forecast horizon: ~{horizon['conservative']} trading days "
+          f"(≈{horizon['conservative']//5} weeks)")
 
     hmm_m = bt_results["hmm"].metrics
     gmm_m = bt_results["gmm"].metrics
