@@ -3,6 +3,7 @@ import { api, type Asset, type SnapshotEntry, type StrategyInfo } from './api'
 import { ChatPanel } from './chat/ChatPanel'
 import { ErrorState, Loading } from './components/Common'
 import { PeriodBar } from './components/PeriodBar'
+import { ReportModal } from './components/ReportModal'
 import { PageProvider } from './page/pageContext'
 import { PeriodProvider } from './period'
 import { Backtest } from './views/Backtest'
@@ -38,6 +39,7 @@ export default function App() {
   const [asset, setAsset] = useState('NVDA')
   const [tab, setTab] = useState<Tab>('Overview')
   const [chatOpen, setChatOpen] = useState(false)
+  const [reportModalOpen, setReportModalOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshNote, setRefreshNote] = useState<string | null>(null)
@@ -151,6 +153,13 @@ export default function App() {
             </div>
           )}
           <button
+            className="btn report-toggle"
+            onClick={() => setReportModalOpen(true)}
+            title="Generate and email report with all output files"
+          >
+            📊 Generate Report
+          </button>
+          <button
             className="btn chatbot-toggle"
             onClick={() => setChatOpen((o) => !o)}
             title="Ask the assistant about the current page"
@@ -215,6 +224,7 @@ export default function App() {
     </div>
     </PeriodProvider>
     <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} />
+    <ReportModal open={reportModalOpen} onClose={() => setReportModalOpen(false)} />
     </PageProvider>
   )
 }

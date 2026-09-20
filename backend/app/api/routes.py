@@ -517,3 +517,27 @@ def get_panel() -> dict:
     """Aligned multi-asset close panel, for the correlation view's context."""
     panel = load_panel()
     return clean({"assets": list(panel.columns), "rows": frame_to_records(panel, index_name="date")})
+
+
+# ---------------------------------------------------------------- report email
+
+
+class SendReportIn(BaseModel):
+    email: str
+
+
+@router.post("/report/send-email")
+def post_send_report(body: SendReportIn) -> dict:
+    """Send all files and folders in backend/output to the specified email address."""
+    from ..email_service import send_report_email
+
+    try:
+        result = send_report_email(body.email)
+        return clean(result)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from None
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to send report: {exc}") from None
+

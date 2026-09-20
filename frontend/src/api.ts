@@ -457,6 +457,22 @@ export const api = {
   /** Live Qwen3-8B answer over the Featherless API. 503 if `api_key` is unset. */
   chat: (payload: ChatPayload) =>
     post<{ reply: string }>('/api/chat', payload),
+
+  // ------------------------------------------------ report
+
+  /** Send all files and folders in backend/output to the specified email address. */
+  sendReport: (email: string) =>
+    post<SendReportResult>('/api/report/send-email', { email }),
+}
+
+export interface SendReportResult {
+  status: string
+  message: string
+  recipient?: string
+  files_count?: number
+  files?: string[]
+  zip_size_bytes?: number
 }
 
 export { ApiError }
+
