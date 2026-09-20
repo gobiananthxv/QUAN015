@@ -5,7 +5,7 @@ Two things are being pinned here, and they pull in opposite directions:
 1. The five effectful endpoints are guarded — they refuse without the shared
    secret, they refuse when hammered, and the mail endpoint refuses a recipient
    nobody approved.
-2. The other thirteen are *not* guarded, and stay reachable. A security layer
+2. The other seventeen are *not* guarded, and stay reachable. A security layer
    that quietly puts the read-only dashboard behind configuration has broken
    the product to protect the parts that were never at risk.
 

@@ -34,7 +34,7 @@ every result for the four ways backtests normally lie.
 | [DEMO.md](DEMO.md) | A scripted three-minute walkthrough |
 | [PROJECT_PLAN.md](PROJECT_PLAN.md) | Phase plan and full decision log |
 
-**Status:** all nine phases complete · **496 tests passing** · all 19
+**Status:** all nine phases complete · **519 tests passing** · all 19
 problem-statement requirements delivered.
 
 ---
@@ -96,7 +96,7 @@ python -c "import secrets; print(secrets.token_urlsafe(24))"
 
 ### Verify everything works
 
-Runs the full test suite plus all five phase-gate scripts, and exits non-zero if
+Runs the full test suite plus all six phase-gate scripts, and exits non-zero if
 anything fails:
 
 ```bash
@@ -171,6 +171,10 @@ cd backend && .venv/bin/python scripts/strategy_report.py
 
 ```bash
 cd backend && .venv/bin/python scripts/robustness_report.py
+```
+
+```bash
+cd backend && .venv/bin/python scripts/security_report.py
 ```
 
 #### Refresh the market data
@@ -308,7 +312,7 @@ That is a deliberate trade, and the reasons are in priority order:
 | **Reproducibility** | A backtest must give the same answer today and next week. If the underlying prices moved between runs, every reported figure would drift and the tests asserting exact values would fail daily. |
 | **Availability** | The platform works with no internet connection at all. |
 | **Speed** | ~14 ms from disk against ~500 ms over the network — and the Research tab runs dozens of backtests per click. |
-| **Test integrity** | 496 tests run offline in about a minute instead of hammering a provider. |
+| **Test integrity** | 519 tests run offline in about a minute instead of hammering a provider. |
 
 It is a *snapshot*, not a cache: there is no TTL, nothing expires, and nothing
 refreshes on a timer. To move the baseline forward, either press **↻ Refresh
@@ -745,7 +749,7 @@ adjustment, per-asset annualisation, and next-open execution.
 
 ### Testing
 
-**496 tests.** Values are hand-computed against known answers, not snapshotted
+**519 tests.** Values are hand-computed against known answers, not snapshotted
 from the implementation — a snapshot test locks in whatever bug exists.
 
 | Suite | Tests | Covers |
@@ -757,9 +761,11 @@ from the implementation — a snapshot test locks in whatever bug exists.
 | `test_strategies.py` | 68 | Known-answer price paths, parameter validation, strategy causality |
 | `test_robustness.py` | 35 | Plateau detection against constructed surfaces with known answers |
 | `test_api.py` | 99 | Every endpoint parsed with a **strict** JSON parser that rejects `Infinity`/`NaN` |
-| `test_security.py` | 71 | Token guard, token-bucket arithmetic against injected time, grid cap, recipient allowlist — and that the other thirteen endpoints stay open |
+| `test_security.py` | 71 | Token guard, token-bucket arithmetic against injected time, grid cap, recipient allowlist — and that the other seventeen endpoints stay open |
 | `test_email_report.py` | 17 | Address validation, archive assembly, SMTP dispatch with the transport mocked |
 | `test_chat.py`, `test_news_sentiment.py` | 26 | Provider contracts and error mapping, with every network call monkeypatched |
+| `test_models.py`, `test_walk_forward.py` | 23 | HMM/GMM regime models and walk-forward evaluation. These need `hmmlearn` and `yfinance`; without them pytest cannot collect the modules and `verify.sh` fails before running anything |
+| `test_strategy.py`, `test_feature_engineering.py`, `test_labeler.py` | 27 | The adaptive strategy, its feature pipeline and regime labelling — the rest of the ML tree, which needs no extra packages |
 
 ---
 
@@ -774,17 +780,19 @@ Neither reflex survives looking at what the endpoints can actually do.
 
 ### What the threat model actually is
 
-Eighteen of the twenty-two endpoints read a committed CSV snapshot, do
-arithmetic, and return numbers. They hold no secrets, write nothing, and reach
-nothing. The worst an attacker gets from all eighteen combined is some of your
-CPU. Four are different, and the difference is not subtle:
+The API has twenty-two endpoints. **Seventeen** read a committed CSV snapshot,
+do arithmetic, and return numbers. They hold no secrets, write nothing, and
+reach nothing; the worst an attacker gets from all seventeen combined is some
+of your CPU. The remaining **five** are different, and the difference is not
+subtle:
 
 | | What it can do that the others cannot |
 |:--|:--|
 | `POST /api/report/send-email` | Package everything under `backend/output` and mail it, through an authenticated account, to an address the caller chooses |
 | `POST /api/data/refresh` | Overwrite the snapshot every published figure in this README is computed from |
 | `POST /api/chat` | Spend a metered AI provider key, once per request |
-| `POST /api/news-sentiment/analyze-{text,image}` | The same, on a second provider |
+| `POST /api/news-sentiment/analyze-text` | The same, on a second provider |
+| `POST /api/news-sentiment/analyze-image` | The same again, with a larger payload |
 
 That table is the whole security design. A control that does not sit in front
 of one of those rows is not protecting anything.
@@ -922,6 +930,30 @@ failure is much easier to ship than the one it replaces, because everything
 still works on the machine where the token is configured. Those tests exist to
 catch the fence spreading.
 
+### The gate catches what no test can
+
+[`scripts/security_report.py`](backend/scripts/security_report.py) runs in
+`verify.sh` beside the other phase gates, and asks a question the suite cannot:
+**is every endpoint still classified?**
+
+It reads the guards off the live application — `require_token` by identity, the
+rate budget from a tag on the closure — rather than restating them, then checks
+each POST route against a declared classification of *effectful*, *metered* or
+*pure*. Adding a route that spends a key, mails something or writes to disk
+without deciding which side of the boundary it belongs on fails the gate:
+
+```
+POST   /api/secretly-mails-your-data          UNCLASSIFIED  -      -
+
+PHASE 9 - 1 INVARIANT FAILURE(S):
+  ! /api/secretly-mails-your-data is a POST endpoint nobody has classified.
+```
+
+That is the failure mode a passing suite is blind to, because nobody writes a
+test for an endpoint they have not thought about yet. The gate also verifies
+the refusals still bite, the reads stay open, and `/health` does not leak the
+token — all in-process, with no server and no provider calls.
+
 ---
 
 ## Project layout
@@ -952,9 +984,15 @@ backend/
     email_service.py       Report archive + SMTP dispatch
     security.py            Capability boundary: token, rate limits, allowlist
     main.py                FastAPI app, CORS, /health
-  tests/                   496 tests
-  scripts/                 One runnable gate per phase
+  models/                  HMM / GMM regime models  ┐
+  regime/                  Detector and labeller     │ ML tree: a separate body
+  features/                Feature engineering       │ of work. The FastAPI app
+  strategy/                Adaptive strategy         │ never imports any of it.
+  backtest/walk_forward.py Walk-forward evaluation  ┘
+  tests/                   519 tests, both trees
+  scripts/                 One runnable gate per phase, six in all
   data_snapshot/           Committed CSV market data
+  output/                  Generated artifacts; what the report mailer attaches
 frontend/
   src/
     api.ts                 Typed client; every numeric field is `number | null`
@@ -1068,7 +1106,10 @@ else is open by design.
 
 ### Dependencies
 
-Seven packages. No database, no cache server, no TA-Lib.
+No database, no cache server, no TA-Lib. The set divides into three groups, and
+the difference between them matters when something fails to install.
+
+**The platform itself — nine packages, all required.**
 
 ```
 fastapi · uvicorn · pandas · numpy · requests · pytest · httpx · google-genai · python-dotenv
@@ -1076,11 +1117,30 @@ fastapi · uvicorn · pandas · numpy · requests · pytest · httpx · google-g
 
 Market data comes from the Yahoo Finance chart API via `requests`. See decision
 **D1** in [`PROJECT_PLAN.md`](PROJECT_PLAN.md#6-decision-log) for why `yfinance`
-and `pyarrow` were dropped. The News Sentiment tab adds two optional-with-a-key
-dependencies: `google-genai` for the live Gemini analysis and `python-dotenv`
-to read `GEMINI_API_KEY` from a `backend/.env` file. Without a key the analyzing
-endpoints return 503 with an explanatory message; the rest of the platform is
+and `pyarrow` were dropped from *this* path. `google-genai` and `python-dotenv`
+serve the News Sentiment tab: without a `GEMINI_API_KEY` the analysing endpoints
+return 503 with an explanatory message and the rest of the platform is
 unaffected.
+
+**The ML regime tree — four packages.**
+
+```
+scikit-learn · hmmlearn · yfinance · scipy
+```
+
+`backend/models`, `backend/regime`, `backend/features`, `backend/strategy` and
+`backend/backtest/walk_forward.py` are a separate body of work that the FastAPI
+app never imports. `yfinance` reappears here despite D1 because that code loads
+its own data; the platform's own pipeline still does not use it.
+
+These are not optional in practice. Missing them is not 23 skipped tests — it
+is pytest failing at **collection**, which takes down the entire run before
+anything executes, so `verify.sh` goes red without a single meaningful failure
+to read.
+
+**Plotting — `matplotlib`, `plotly`, `seaborn`, `joblib`.** Used by the ML
+tree's own scripts, not by the dashboard, which renders everything with
+Recharts in the browser.
 
 Frontend: React 19, Vite, TypeScript, Recharts.
 

@@ -13,7 +13,7 @@ Hackathon build · 24 hours · target: HackHere FinTech track
 
 A single platform that ingests 10 years of daily history for three assets across
 three asset classes, computes quantitative indicators and risk metrics, measures
-cross-asset correlation, backtests four trading strategies against a
+cross-asset correlation, backtests five trading strategies against a
 buy-and-hold benchmark with realistic costs, attributes performance to market
 regimes, and presents all of it in an interactive dashboard.
 
@@ -48,8 +48,25 @@ Every requirement from the problem statement, mapped to where it is delivered.
 | 19 | "Not a guarantee of future returns" disclaimer | 7 | ✅ Done |
 
 **Explicitly out of scope** (listed as *Future Scope* in the problem statement,
-and correctly deferred): portfolio optimisation, Monte Carlo, VaR, ML-based
-regime detection, paper trading, real-time data, AI research assistant.
+and correctly deferred): portfolio optimisation, Monte Carlo, VaR, paper
+trading, real-time data.
+
+**Two of the deferred items were built anyway**, and honesty is better than a
+stale list:
+
+- **ML-based regime detection** — `backend/models`, `backend/regime`,
+  `backend/features`, `backend/strategy` and `backend/backtest/walk_forward.py`
+  hold HMM and GMM regime models with walk-forward evaluation. This is a
+  separate tree; the FastAPI app never imports it, and none of the dashboard's
+  figures come from it.
+- **AI research assistant** — the dashboard's chatbot (`app/chat.py`) and the
+  News Sentiment tab (`app/news_sentiment_backend.py`). Both are read-only
+  narrators over state the platform already computed: the assistant has no
+  tools, and no number on any chart originates from a model.
+
+That second point is the constraint that keeps them inside the brief's spirit.
+Neither can influence a backtest, and a reader who distrusts both can ignore
+every panel they feed without losing a single quantitative result.
 
 ---
 
@@ -66,9 +83,9 @@ following were cut. Each cut is a considered trade-off, not an oversight.
 | Docker / Kubernetes / CI-CD | `run` scripts | Nothing is deployed to a cluster at a demo table |
 | Prometheus / Grafana / ELK | stdout logging | No production traffic to observe |
 | TA-Lib | Direct pandas/NumPy implementations | C build on Windows is a known time sink; ~150 lines replaces it |
-| `yfinance` | Direct Yahoo chart API via `requests` | See §6 — this one was forced on us |
-| Auth, rate limiting, security testing | — | No users, no threat model |
-| 170+ tests, >80% coverage | ~20 targeted tests on the maths that must be right | Correctness where it counts, not coverage theatre |
+| `yfinance` in the data pipeline | Direct Yahoo chart API via `requests` | See §6 — this one was forced on us. It later returned as a dependency of the ML tree, which loads its own data |
+| Auth, RBAC, TLS | A capability boundary over 5 endpoints (Phase 9) | Reversed. The original reasoning — "no users, no threat model" — was right about *users* and wrong about *threat model*: the mail endpoint would send the contents of `backend/output` to any address a caller named. Guarding four dangerous things is not the same as building a login |
+| 170+ tests, >80% coverage | Targeted tests on the maths, the boundary, and the ML tree | Correctness where it counts, not coverage theatre. The count grew to 519 on its own, by adding tests where something could be wrong rather than to a target |
 | ADX, Stochastic, OBV, CMF, Kelly Criterion | — | Not in the problem statement |
 
 ---
@@ -82,6 +99,8 @@ following were cut. Each cut is a considered trade-off, not an oversight.
 └───────────────────────────┬──────────────────────────────┘
                             │ REST (JSON)
 ┌───────────────────────────▼──────────────────────────────┐
+│  app/security.py   capability boundary (5 endpoints)     │
+├──────────────────────────────────────────────────────────┤
 │  FastAPI  (single process)                               │
 ├──────────────────────────────────────────────────────────┤
 │  app/backtest/   engine · strategies · robustness        │
@@ -96,17 +115,27 @@ following were cut. Each cut is a considered trade-off, not an oversight.
               └─────────────┬──────────────┘
                             │ cold cache only
                    Yahoo Finance chart API
+
+  models/ · regime/ · features/ · strategy/ · backtest/walk_forward.py
+  ML regime tree — parallel to the above, imported by neither
 ```
 
 **Layering rule:** `data` knows nothing of `analytics`; `analytics` knows nothing
 of `backtest`; nothing below the API layer imports FastAPI. This keeps the quant
 core importable and testable without a running server.
 
+`app/security.py` is the one exception, and sits *beside* the API rather than
+under it: producing FastAPI dependencies and `HTTPException` is its entire job.
+Nothing in `data`, `analytics` or `backtest` imports it, so the rule holds where
+it matters.
+
 ---
 
 ## 5. Phase plan
 
 Times are estimates against a 24-hour budget, ~22 h planned, ~2 h buffer.
+Phases 8 and 9 were added after the original eight were complete, from the
+remaining buffer.
 
 ### Phase 0 — Scaffold · 45 min · ✅ COMPLETE
 Repo layout, dependency set, virtualenv, `.gitignore`.
@@ -367,11 +396,16 @@ injection yields a rude paragraph. The endpoint needed guarding for **cost**,
 not content, and the controls are sized to that.
 
 **Verification gate — passed.**
-1. ✅ 484 tests pass, of which 59 are new in `test_security.py`. Seven
+1. ✅ 519 tests pass, of which 71 are new in `test_security.py`. Seven
    pre-existing tests failed on first run — five refresh tests sharing a rate
    budget, two email tests meeting the allowlist — and all seven were genuine
    consequences of the guards, fixed in the tests and in one case in the route.
-2. ✅ All five `verify.sh` script gates pass; TypeScript clean; frontend builds.
+2. ✅ All six `verify.sh` script gates pass, including the new
+   `security_report.py`; TypeScript clean; frontend builds. `verify.sh` is green
+   end to end for the first time: `hmmlearn` and `yfinance` were listed in
+   `requirements.txt` but installed nowhere, so `test_models.py` and
+   `test_walk_forward.py` failed at **collection** and took the whole run down
+   before anything executed. Installed; all 23 of those tests pass unchanged.
 3. ✅ Checked against a **live server**, not only TestClient: `/health` reports
    `token_required: true`, a guarded endpoint answers 401 both without the
    header and with a wrong one, an unguarded read answers 200, and the preflight
@@ -386,6 +420,21 @@ token header required merging headers instead of replacing them, which would
 have silently broken every image upload. The fix moves the decision into the
 helper: a `FormData` body drops the JSON content type on its own, so a caller
 cannot forget and no caller has to know.
+
+A second one came from the same change. `ApiError` was already exported at the
+bottom of `api.ts`, so adding `export` to the class produced a duplicate export:
+`tsc --noEmit` accepted it and the browser bundle did not. It was caught by
+loading the page, which is the argument for opening the dashboard rather than
+trusting a green typecheck.
+
+**Where the tests were wrong rather than the code.** Two suites were writing
+real artifacts. `test_email_report` and later `test_security` both drove the
+mailer far enough to package every file under `backend/output` and write a ~5 MB
+`.eml` audit copy back into it — the suite growing the repository it tested, and
+making the next run slower. Both now redirect the output directory at a
+temporary path. Total suite time roughly halved. Three of those `.eml` files are
+committed and could be dropped with `git rm --cached`; `backend/output/emails/`
+is now in `.gitignore`.
 
 **What is honestly not covered.** The token reaches the browser as a Vite
 variable and is readable in devtools. It raises the cost of scripted abuse; it
@@ -441,6 +490,24 @@ fresh budget per request, which is an opt-out disguised as a feature. There is
 no proxy here, so `client_key` reads `request.client.host` only. A regression
 test rotates the header across the budget and asserts the 429 still arrives.
 
+**D44 — The loopback binding is written down even though it is the default
+(Phase 9).**
+`run.sh` and `run.ps1` now pass `--host 127.0.0.1` explicitly. It changes no
+behaviour. The reason is that `security.py` assumes loopback in its own
+reasoning, and an assumption that lives in a framework default is one nobody
+reads before overriding it — `--host 0.0.0.0` to demo on conference wifi is a
+one-word change that silently invalidates the entire threat model.
+
+**D45 — 401 for a bad credential, 403 only for the recipient policy (Phase 9).**
+Both refusals originally answered 403, which made them indistinguishable to the
+dashboard — and "your token is wrong" and "that address is not approved" call
+for completely different advice. A wrong token is a credential that would
+succeed if corrected, which is what 401 means, so the token guard now answers
+401 in both its failure cases and 403 belongs exclusively to the mail
+allowlist. The report modal branches on the code to say which, instead of
+showing the API's own text, which names environment variables at a reader who
+does not run the server.
+
 **D46 — Bodies are capped, and must declare their length (Phase 9).**
 A rate limit bounds how many requests arrive, not how large each is, and the
 assistant forwards its payload to a metered provider — so twenty permitted
@@ -460,23 +527,16 @@ decided before a byte of body is read. The streaming count is kept as a
 backstop against a lying or rewritten header and is tested directly rather than
 through a client — provoking it through one is what produced the mess above.
 
-**D45 — 401 for a bad credential, 403 only for the recipient policy (Phase 9).**
-Both refusals originally answered 403, which made them indistinguishable to the
-dashboard — and "your token is wrong" and "that address is not approved" call
-for completely different advice. A wrong token is a credential that would
-succeed if corrected, which is what 401 means, so the token guard now answers
-401 in both its failure cases and 403 belongs exclusively to the mail
-allowlist. The report modal branches on the code to say which, instead of
-showing the API's own text, which names environment variables at a reader who
-does not run the server.
-
-**D44 — The loopback binding is written down even though it is the default
-(Phase 9).**
-`run.sh` and `run.ps1` now pass `--host 127.0.0.1` explicitly. It changes no
-behaviour. The reason is that `security.py` assumes loopback in its own
-reasoning, and an assumption that lives in a framework default is one nobody
-reads before overriding it — `--host 0.0.0.0` to demo on conference wifi is a
-one-word change that silently invalidates the entire threat model.
+**D47 — The phase gate checks classification, not behaviour (Phase 9).**
+`security_report.py` could have re-asserted what the 71 unit tests already
+assert. It asks a different question instead: is every POST endpoint still
+classified as effectful, metered or pure? It reads the guards off the live
+application — `require_token` by identity, the budget from a tag added to the
+closure for exactly this — so it is inspecting the app rather than its own copy
+of the answer. An endpoint added without that decision fails the gate, which is
+the one failure a green suite cannot catch, because nobody writes a test for an
+endpoint they have not thought about yet. Verified by adding a throwaway route
+and confirming exit 1.
 
 **D36 — A signal is a target exposure, not a direction (Phase 8).**
 `generate_signals` returns any real number: `1.0` fully invested, `0.5` half,

@@ -231,6 +231,10 @@ def rate_limit(name: str):
                 headers={"Retry-After": str(max(1, int(wait + 0.5)))},
             )
 
+    # Tagged so the boundary can be *inspected* rather than restated. A closure
+    # is otherwise anonymous, and a gate that hardcodes which routes are guarded
+    # is checking its own copy of the answer instead of the application.
+    dependency._qmafib_budget = name  # type: ignore[attr-defined]
     return dependency
 
 
