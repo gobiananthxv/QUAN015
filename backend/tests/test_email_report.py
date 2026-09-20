@@ -11,10 +11,16 @@ from fastapi.testclient import TestClient
 
 from app.email_service import (
     EMAIL_REGEX,
+    build_csv_zip,
+    build_images_zip,
     build_zip_archive,
+    collect_csv_files,
+    collect_image_files,
     collect_output_files,
     create_report_email,
+    extract_report_findings,
     get_output_dir,
+    get_report_pdf,
     send_report_email,
     validate_email,
 )
@@ -59,34 +65,62 @@ class TestEmailValidation:
 class TestOutputFilesAndZip:
     """Verify scanning backend/output and ZIP creation."""
 
-    def test_collect_output_files(self):
+    def test_collect_csv_files(self):
         output_dir = get_output_dir()
-        files = collect_output_files(output_dir)
-
-        # backend/output should contain CSV files and plots
-        assert len(files) > 0
-        filenames = [f["filename"] for f in files]
-        assert any(fn.endswith(".csv") for fn in filenames)
-
-        # Check relative paths
-        for f in files:
+        csv_files = collect_csv_files(output_dir)
+        assert len(csv_files) > 0
+        for f in csv_files:
+            assert f["filename"].lower().endswith(".csv")
             assert not f["rel_path"].startswith("emails")
             assert f["full_path"].exists()
-            assert f["size_bytes"] >= 0
 
-    def test_build_zip_archive(self):
+    def test_collect_image_files(self):
         output_dir = get_output_dir()
-        files = collect_output_files(output_dir)
-        zip_bytes = build_zip_archive(output_dir, files)
+        image_files = collect_image_files(output_dir)
+        assert len(image_files) > 0
+        for f in image_files:
+            assert f["rel_path"].startswith("plots/") or f["filename"].lower().endswith(
+                (".png", ".jpg", ".jpeg", ".svg")
+            )
+            assert f["full_path"].exists()
 
+    def test_get_report_pdf(self):
+        output_dir = get_output_dir()
+        pdf_info = get_report_pdf(output_dir)
+        if (output_dir / "Report.pdf").exists():
+            assert pdf_info is not None
+            assert pdf_info["filename"] == "Report.pdf"
+            assert pdf_info["full_path"].exists()
+
+    def test_build_csv_zip(self):
+        output_dir = get_output_dir()
+        csv_files = collect_csv_files(output_dir)
+        zip_bytes = build_csv_zip(output_dir, csv_files)
         assert len(zip_bytes) > 0
-
-        # Read back in-memory zip to verify valid zip structure
         with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
             namelist = zf.namelist()
-            assert len(namelist) == len(files)
-            for f in files:
+            assert len(namelist) == len(csv_files)
+            for f in csv_files:
                 assert f["rel_path"] in namelist
+
+    def test_build_images_zip(self):
+        output_dir = get_output_dir()
+        image_files = collect_image_files(output_dir)
+        zip_bytes = build_images_zip(output_dir, image_files)
+        assert len(zip_bytes) > 0
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+            namelist = zf.namelist()
+            assert len(namelist) == len(image_files)
+            for f in image_files:
+                assert f["rel_path"] in namelist
+
+    def test_extract_report_findings(self):
+        output_dir = get_output_dir()
+        findings = extract_report_findings(output_dir)
+        assert isinstance(findings, dict)
+        assert "current_regime" in findings
+        assert "strategy_recommendation" in findings
+        assert len(findings["details"]) > 0
 
 
 class TestEmailConstruction:
@@ -94,30 +128,53 @@ class TestEmailConstruction:
 
     def test_create_report_email(self):
         output_dir = get_output_dir()
-        files = collect_output_files(output_dir)
-        zip_bytes = build_zip_archive(output_dir, files)
+        csv_files = collect_csv_files(output_dir)
+        image_files = collect_image_files(output_dir)
+        pdf_info = get_report_pdf(output_dir)
+        csv_zip = build_csv_zip(output_dir, csv_files)
+        images_zip = build_images_zip(output_dir, image_files)
+        findings = extract_report_findings(output_dir)
 
         msg = create_report_email(
             to_email="test@example.com",
-            files=files,
-            zip_data=zip_bytes,
             from_email="noreply@qmafib.local",
+            csv_zip_data=csv_zip,
+            csv_files=csv_files,
+            images_zip_data=images_zip,
+            image_files=image_files,
+            pdf_info=pdf_info,
+            findings=findings,
         )
 
         assert msg["To"] == "test@example.com"
         assert msg["From"] == "noreply@qmafib.local"
         assert "QMAFIB" in msg["Subject"]
 
-        # Check attachments: zip file should be present
+        # Check attachments: ONLY csv_files.zip, images.zip, and Report.pdf
         attachment_names = []
         for part in msg.walk():
             filename = part.get_filename()
             if filename:
                 attachment_names.append(filename)
 
-        assert "output_report.zip" in attachment_names
-        # Check individual file attachments are also included
-        assert len(attachment_names) >= len(files)
+        expected = ["csv_files.zip", "images.zip"]
+        if pdf_info:
+            expected.append(pdf_info["filename"])
+
+        assert sorted(attachment_names) == sorted(expected)
+
+        # Verify email body text includes intro, metadata, and findings
+        body_text = ""
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain":
+                body_text = part.get_payload(decode=True).decode("utf-8")
+                break
+
+        assert "Here are the report files" in body_text
+        assert "ATTACHMENTS METADATA" in body_text
+        assert "KEY FINDINGS & ANALYTICS SUMMARY" in body_text
+        assert "csv_files.zip" in body_text
+        assert "images.zip" in body_text
 
 
 class TestReportEndpoint:
@@ -129,18 +186,13 @@ class TestReportEndpoint:
         assert "Invalid email address" in response.json()["detail"]
 
     def test_send_report_success_mocked_smtp(self, monkeypatch, tmp_path):
-        # The recipient allowlist fails closed, so a test that expects delivery
-        # has to say who delivery is allowed to — exactly as a real deployment
-        # does. Without this the endpoint correctly answers 403.
         monkeypatch.setenv("REPORT_EMAIL_ALLOWLIST", "quant.researcher@test.com")
 
-        # Redirect the archive at a temporary directory. Against the real one
-        # this test packaged every artifact in backend/output and wrote a ~5 MB
-        # .eml audit copy back into it on every run — the suite was growing the
-        # repository it was testing, and the next run then had more to zip.
+        # Create dummy artifacts in tmp_path
         (tmp_path / "report.csv").write_text("date,value\n2024-01-01,1\n")
-        (tmp_path / "nested").mkdir()
-        (tmp_path / "nested" / "plot.txt").write_text("placeholder")
+        (tmp_path / "plots").mkdir()
+        (tmp_path / "plots" / "chart.png").write_bytes(b"\x89PNG\r\n\x1a\nplaceholder")
+        (tmp_path / "Report.pdf").write_bytes(b"%PDF-1.4 dummy pdf")
         monkeypatch.setattr("app.email_service.get_output_dir", lambda: tmp_path)
 
         with patch("smtplib.SMTP") as mock_smtp:
@@ -157,5 +209,10 @@ class TestReportEndpoint:
             assert data["status"] == "success"
             assert data["recipient"] == "quant.researcher@test.com"
             assert data["files_count"] > 0
-            assert "output_report.zip" or len(data["files"]) > 0
+            assert "attachments" in data
+            attachment_names = [a["name"] for a in data["attachments"]]
+            assert "csv_files.zip" in attachment_names
+            assert "images.zip" in attachment_names
+            assert "Report.pdf" in attachment_names
             assert instance.send_message.called
+

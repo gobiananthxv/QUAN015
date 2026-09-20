@@ -99,8 +99,148 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024):.2f} MB"
 
 
+def collect_output_files(output_dir: Path) -> list[dict[str, Any]]:
+    """Scan backend/output for all files and folders.
+
+    Excludes the internal 'emails/' directory (used for storing email logs)
+    and temporary files.
+    """
+    collected: list[dict[str, Any]] = []
+    if not output_dir.exists():
+        return collected
+
+    for root, _, filenames in os.walk(output_dir):
+        rel_root = os.path.relpath(root, output_dir)
+        if rel_root == "emails" or rel_root.startswith("emails" + os.sep):
+            continue
+
+        for filename in sorted(filenames):
+            if filename.startswith(".") or filename.endswith(".tmp"):
+                continue
+
+            full_path = Path(root) / filename
+            rel_path = os.path.relpath(full_path, output_dir)
+            size_bytes = full_path.stat().st_size
+
+            collected.append({
+                "filename": filename,
+                "rel_path": rel_path.replace("\\", "/"),
+                "full_path": full_path,
+                "size_bytes": size_bytes,
+                "size_display": _format_size(size_bytes),
+            })
+
+    return collected
+
+
+def collect_csv_files(output_dir: Path) -> list[dict[str, Any]]:
+    """Scan output_dir for all CSV files."""
+    collected: list[dict[str, Any]] = []
+    if not output_dir.exists():
+        return collected
+
+    for root, _, filenames in os.walk(output_dir):
+        rel_root = os.path.relpath(root, output_dir)
+        if rel_root == "emails" or rel_root.startswith("emails" + os.sep):
+            continue
+
+        for filename in sorted(filenames):
+            if filename.startswith(".") or filename.endswith(".tmp"):
+                continue
+            if not filename.lower().endswith(".csv"):
+                continue
+
+            full_path = Path(root) / filename
+            rel_path = os.path.relpath(full_path, output_dir)
+            size_bytes = full_path.stat().st_size
+
+            collected.append({
+                "filename": filename,
+                "rel_path": rel_path.replace("\\", "/"),
+                "full_path": full_path,
+                "size_bytes": size_bytes,
+                "size_display": _format_size(size_bytes),
+            })
+
+    return collected
+
+
+def collect_image_files(output_dir: Path) -> list[dict[str, Any]]:
+    """Scan output_dir for all image and plot files."""
+    image_extensions = {".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp"}
+    collected: list[dict[str, Any]] = []
+    if not output_dir.exists():
+        return collected
+
+    for root, _, filenames in os.walk(output_dir):
+        rel_root = os.path.relpath(root, output_dir)
+        if rel_root == "emails" or rel_root.startswith("emails" + os.sep):
+            continue
+
+        for filename in sorted(filenames):
+            if filename.startswith(".") or filename.endswith(".tmp"):
+                continue
+
+            ext = Path(filename).suffix.lower()
+            is_in_image_folder = rel_root in ("plots", "images") or rel_root.startswith(
+                ("plots" + os.sep, "images" + os.sep)
+            )
+            if ext in image_extensions or (is_in_image_folder and ext in (".png", ".jpg", ".jpeg", ".svg")):
+                full_path = Path(root) / filename
+                rel_path = os.path.relpath(full_path, output_dir)
+                size_bytes = full_path.stat().st_size
+
+                collected.append({
+                    "filename": filename,
+                    "rel_path": rel_path.replace("\\", "/"),
+                    "full_path": full_path,
+                    "size_bytes": size_bytes,
+                    "size_display": _format_size(size_bytes),
+                })
+
+    return collected
+
+
+def get_report_pdf(output_dir: Path) -> dict[str, Any] | None:
+    """Find Report.pdf in output_dir if present."""
+    if not output_dir.exists():
+        return None
+
+    # Check for direct match
+    direct_pdf = output_dir / "Report.pdf"
+    if direct_pdf.is_file():
+        size_bytes = direct_pdf.stat().st_size
+        return {
+            "filename": "Report.pdf",
+            "rel_path": "Report.pdf",
+            "full_path": direct_pdf,
+            "size_bytes": size_bytes,
+            "size_display": _format_size(size_bytes),
+        }
+
+    # Search for any PDF in output_dir (excluding emails)
+    for root, _, filenames in os.walk(output_dir):
+        rel_root = os.path.relpath(root, output_dir)
+        if rel_root == "emails" or rel_root.startswith("emails" + os.sep):
+            continue
+        for filename in sorted(filenames):
+            if filename.lower().endswith(".pdf"):
+                full_path = Path(root) / filename
+                rel_path = os.path.relpath(full_path, output_dir)
+                size_bytes = full_path.stat().st_size
+                return {
+                    "filename": filename,
+                    "rel_path": rel_path.replace("\\", "/"),
+                    "full_path": full_path,
+                    "size_bytes": size_bytes,
+                    "size_display": _format_size(size_bytes),
+                }
+
+    return None
+
+
 def build_zip_archive(output_dir: Path, files: list[dict[str, Any]]) -> bytes:
-    """Package all output files and folder hierarchy into an in-memory ZIP archive."""
+    """Package given files into an in-memory ZIP archive preserving relative paths."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in files:
@@ -109,13 +249,198 @@ def build_zip_archive(output_dir: Path, files: list[dict[str, Any]]) -> bytes:
     return buffer.getvalue()
 
 
+def build_csv_zip(output_dir: Path, csv_files: list[dict[str, Any]] | None = None) -> bytes:
+    """Package all CSV files into an in-memory ZIP archive."""
+    if csv_files is None:
+        csv_files = collect_csv_files(output_dir)
+    return build_zip_archive(output_dir, csv_files)
+
+
+def build_images_zip(output_dir: Path, image_files: list[dict[str, Any]] | None = None) -> bytes:
+    """Package all image and plot files into an in-memory ZIP archive."""
+    if image_files is None:
+        image_files = collect_image_files(output_dir)
+    return build_zip_archive(output_dir, image_files)
+
+
+def extract_report_findings(output_dir: Path) -> dict[str, Any]:
+    """Extract quantitative findings and regime metrics from output files."""
+    findings: dict[str, Any] = {
+        "current_regime": "Unknown",
+        "current_regime_model": "N/A",
+        "regime_date": None,
+        "strategy_recommendation": None,
+        "backtest_summary": None,
+        "forecast_summary": None,
+        "details": [],
+    }
+
+    if not output_dir.exists():
+        return findings
+
+    # 1. Check HMM / GMM regimes for current active regime
+    for model_name, filename in [("HMM", "SPY_hmm_regimes.csv"), ("GMM", "SPY_gmm_regimes.csv")]:
+        regimes_path = output_dir / filename
+        if regimes_path.is_file():
+            try:
+                with open(regimes_path, "r", encoding="utf-8") as f:
+                    lines = [line.strip() for line in f if line.strip()]
+                if len(lines) > 1:
+                    last_line = lines[-1].split(",")
+                    regime_date = last_line[0]
+                    regime_name = last_line[1]
+                    findings["current_regime"] = regime_name
+                    findings["current_regime_model"] = model_name
+                    findings["regime_date"] = regime_date
+                    findings["details"].append(
+                        f"Latest {model_name} Market Regime ({regime_date}): {regime_name}"
+                    )
+                    break
+            except Exception:
+                pass
+
+    # 2. Strategy Parameters
+    strat_path = output_dir / "strategy_params.csv"
+    if strat_path.is_file():
+        try:
+            with open(strat_path, "r", encoding="utf-8") as f:
+                lines = [line.strip() for line in f if line.strip()]
+            if len(lines) > 1:
+                header = [c.strip() for c in lines[0].split(",")]
+                active_regime = findings["current_regime"]
+                matched_row = None
+                for line in lines[1:]:
+                    parts = [p.strip().strip('"') for p in line.split(",")]
+                    if len(parts) >= len(header) and parts[0].lower() == active_regime.lower():
+                        matched_row = parts
+                        break
+                if matched_row:
+                    strat_info = {
+                        "regime": matched_row[0],
+                        "position_size": matched_row[1],
+                        "stop_loss": matched_row[2],
+                        "take_profit": matched_row[3],
+                        "signal_filter": matched_row[4],
+                        "description": matched_row[5] if len(matched_row) > 5 else "",
+                    }
+                    findings["strategy_recommendation"] = strat_info
+                    findings["details"].append(
+                        f"Adaptive Strategy ({active_regime}): Position Size {strat_info['position_size']}, "
+                        f"Stop Loss {strat_info['stop_loss']}, Take Profit {strat_info['take_profit']}, "
+                        f"Filter: {strat_info['signal_filter']}"
+                    )
+        except Exception:
+            pass
+
+    # 3. Backtest performance highlights
+    folds_path = output_dir / "SPY_hmm_folds.csv"
+    if not folds_path.is_file():
+        folds_path = output_dir / "SPY_gmm_folds.csv"
+    if folds_path.is_file():
+        try:
+            with open(folds_path, "r", encoding="utf-8") as f:
+                lines = [line.strip() for line in f if line.strip()]
+            if len(lines) > 1:
+                header = [c.strip() for c in lines[0].split(",")]
+                outperf_idx = header.index("outperformance_%") if "outperformance_%" in header else -1
+                if outperf_idx != -1:
+                    outperfs = []
+                    for line in lines[1:]:
+                        parts = line.split(",")
+                        if len(parts) > outperf_idx:
+                            try:
+                                outperfs.append(float(parts[outperf_idx]))
+                            except ValueError:
+                                pass
+                    if outperfs:
+                        avg_outperf = sum(outperfs) / len(outperfs)
+                        win_rate = sum(1 for x in outperfs if x > 0) / len(outperfs) * 100
+                        findings["backtest_summary"] = {
+                            "total_folds": len(outperfs),
+                            "avg_outperformance_pct": round(avg_outperf, 2),
+                            "win_rate_pct": round(win_rate, 1),
+                        }
+                        findings["details"].append(
+                            f"Walk-Forward Backtest: {len(outperfs)} folds, "
+                            f"Avg Outperformance: {avg_outperf:+.2f}%, Win Rate: {win_rate:.1f}%"
+                        )
+        except Exception:
+            pass
+
+    # 4. 60-Day Forecast
+    forecast_path = output_dir / "SPY_forecast_60d.csv"
+    if not forecast_path.is_file():
+        forecast_path = output_dir / "SPY_hmm_forecast.csv"
+    if forecast_path.is_file():
+        try:
+            with open(forecast_path, "r", encoding="utf-8") as f:
+                lines = [line.strip() for line in f if line.strip()]
+            if len(lines) > 1:
+                header = [c.strip() for c in lines[0].split(",")]
+                regime_cols = header[1:]
+                # Day 1
+                day1_vals = [float(x) for x in lines[1].split(",")[1:]]
+                max_d1_idx = day1_vals.index(max(day1_vals))
+                d1_regime = regime_cols[max_d1_idx]
+                d1_prob = day1_vals[max_d1_idx] * 100
+
+                # Last day
+                last_vals = [float(x) for x in lines[-1].split(",")[1:]]
+                max_last_idx = last_vals.index(max(last_vals))
+                last_regime = regime_cols[max_last_idx]
+                last_prob = last_vals[max_last_idx] * 100
+
+                findings["forecast_summary"] = {
+                    "day_1_regime": d1_regime,
+                    "day_1_prob_pct": round(d1_prob, 1),
+                    "day_60_regime": last_regime,
+                    "day_60_prob_pct": round(last_prob, 1),
+                }
+                findings["details"].append(
+                    f"60-Day Forecast: Day 1 most likely {d1_regime} ({d1_prob:.1f}%), "
+                    f"Day 60 terminal state {last_regime} ({last_prob:.1f}%)"
+                )
+        except Exception:
+            pass
+
+    return findings
+
+
 def create_report_email(
     to_email: str,
-    files: list[dict[str, Any]],
-    zip_data: bytes,
-    from_email: str,
+    from_email: str = "noreply@qmafib.local",
+    csv_zip_data: bytes | None = None,
+    csv_files: list[dict[str, Any]] | None = None,
+    images_zip_data: bytes | None = None,
+    image_files: list[dict[str, Any]] | None = None,
+    pdf_info: dict[str, Any] | None = None,
+    findings: dict[str, Any] | None = None,
+    # Backward compatibility arguments
+    files: list[dict[str, Any]] | None = None,
+    zip_data: bytes | None = None,
 ) -> MIMEMultipart:
-    """Assemble a rich multipart MIME email with HTML body, ZIP, and attachments."""
+    """Assemble a multipart MIME email containing only the zipped CSVs, zipped images, and Report.pdf.
+
+    The email body details attachment metadata and key findings.
+    """
+    # Handle backward-compatible positional or kwargs invocation where files was passed
+    if csv_files is None and files is not None:
+        csv_files = [f for f in files if f["filename"].lower().endswith(".csv")]
+    if image_files is None and files is not None:
+        image_files = [
+            f for f in files
+            if Path(f["filename"]).suffix.lower() in (".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp")
+            or f["rel_path"].startswith(("plots/", "images/"))
+        ]
+    if pdf_info is None and files is not None:
+        pdfs = [f for f in files if f["filename"].lower().endswith(".pdf")]
+        if pdfs:
+            pdf_info = pdfs[0]
+
+    csv_files = csv_files or []
+    image_files = image_files or []
+    findings = findings or {}
+
     msg = MIMEMultipart("mixed")
     msg["Subject"] = f"QMAFIB Market Regime & Backtest Report — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
     msg["From"] = from_email
@@ -123,31 +448,149 @@ def create_report_email(
     msg["Date"] = email.utils.formatdate(localtime=True)
     msg["Message-ID"] = email.utils.make_msgid(domain="qmafib.local")
 
-    # Alternative container for plain text and HTML versions
     alt_part = MIMEMultipart("alternative")
 
-    # Plain text version
-    file_list_txt = "\n".join([f" - {f['rel_path']} ({f['size_display']})" for f in files])
+    # Build Plain Text Attachment Metadata
+    attachments_meta_txt = []
+    if csv_zip_data is not None or csv_files:
+        csv_size = _format_size(len(csv_zip_data)) if csv_zip_data else "N/A"
+        csv_names = "\n".join([f"     - {f['rel_path']} ({f['size_display']})" for f in csv_files]) or "     (none)"
+        attachments_meta_txt.append(
+            f"  1. csv_files.zip ({len(csv_files)} CSV files, {csv_size})\n{csv_names}"
+        )
+    if images_zip_data is not None or image_files:
+        img_size = _format_size(len(images_zip_data)) if images_zip_data else "N/A"
+        img_names = "\n".join([f"     - {f['rel_path']} ({f['size_display']})" for f in image_files]) or "     (none)"
+        attachments_meta_txt.append(
+            f"  2. images.zip ({len(image_files)} image/plot files, {img_size})\n{img_names}"
+        )
+    if pdf_info:
+        attachments_meta_txt.append(
+            f"  3. {pdf_info['filename']} ({pdf_info['size_display']})\n     - Executive summary report (PDF)"
+        )
+    meta_txt_str = "\n".join(attachments_meta_txt) if attachments_meta_txt else "  No attachments packaged."
+
+    # Build Plain Text Findings
+    findings_txt_lines = []
+    if findings.get("current_regime") and findings.get("current_regime") != "Unknown":
+        findings_txt_lines.append(
+            f"  • Current Market Regime: {findings['current_regime']} "
+            f"(Model: {findings.get('current_regime_model', 'N/A')}, Date: {findings.get('regime_date', 'N/A')})"
+        )
+    strat = findings.get("strategy_recommendation")
+    if strat:
+        findings_txt_lines.append(
+            f"  • Adaptive Strategy Recommendation ({strat.get('regime')}):\n"
+            f"      Position Size: {strat.get('position_size')} | Stop Loss: {strat.get('stop_loss')} | "
+            f"Take Profit: {strat.get('take_profit')} | Signal Filter: {strat.get('signal_filter')}\n"
+            f"      Guidance: {strat.get('description')}"
+        )
+    bt = findings.get("backtest_summary")
+    if bt:
+        findings_txt_lines.append(
+            f"  • Walk-Forward Backtest ({bt.get('total_folds')} folds):\n"
+            f"      Avg Outperformance: {bt.get('avg_outperformance_pct'):+.2f}% | Win Rate: {bt.get('win_rate_pct'):.1f}%"
+        )
+    fc = findings.get("forecast_summary")
+    if fc:
+        findings_txt_lines.append(
+            f"  • 60-Day Regime Forecast:\n"
+            f"      Near-Term (Day 1): {fc.get('day_1_regime')} ({fc.get('day_1_prob_pct'):.1f}%)\n"
+            f"      Horizon (Day 60): {fc.get('day_60_regime')} ({fc.get('day_60_prob_pct'):.1f}%)"
+        )
+    if not findings_txt_lines:
+        findings_txt_lines.append("  • Analytical data and model outputs have been successfully generated.")
+    findings_txt_str = "\n".join(findings_txt_lines)
+
     text_content = (
         f"QMAFIB Quantitative Analytics & Market Regime Report\n"
         f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
-        f"Attached are all generated output files, plots, and models from the QMAFIB platform.\n"
-        f"All files and directory hierarchies are also consolidated into the attached 'output_report.zip'.\n\n"
-        f"Files included ({len(files)} total):\n"
-        f"{file_list_txt}\n\n"
+        f"Here are the report files and model outputs attached for your review:\n\n"
+        f"ATTACHMENTS METADATA:\n"
+        f"--------------------------------------------------\n"
+        f"{meta_txt_str}\n\n"
+        f"KEY FINDINGS & ANALYTICS SUMMARY:\n"
+        f"--------------------------------------------------\n"
+        f"{findings_txt_str}\n\n"
         f"—\n"
         f"QMAFIB Platform | Quantitative Multi-Asset Financial Intelligence & Backtesting\n"
     )
     alt_part.attach(MIMEText(text_content, "plain", "utf-8"))
 
-    # HTML version
-    file_rows_html = "".join([
-        f"<tr>"
-        f"<td style='padding: 8px 12px; border-bottom: 1px solid #1f2c45; font-family: monospace; color: #4f9cf9;'>{f['rel_path']}</td>"
-        f"<td style='padding: 8px 12px; border-bottom: 1px solid #1f2c45; text-align: right; color: #94a3b8;'>{f['size_display']}</td>"
-        f"</tr>"
-        for f in files
-    ])
+    # Build HTML Version
+    attachments_html_rows = []
+    if csv_zip_data is not None or csv_files:
+        csv_size = _format_size(len(csv_zip_data)) if csv_zip_data else "N/A"
+        csv_names_html = "<br/>".join([f"<code>{f['rel_path']}</code> ({f['size_display']})" for f in csv_files])
+        attachments_html_rows.append(
+            f"<tr>"
+            f"<td style='padding: 10px 12px; border-bottom: 1px solid #1f2c45; color: #38bdf8; font-weight: 600;'>📁 csv_files.zip</td>"
+            f"<td style='padding: 10px 12px; border-bottom: 1px solid #1f2c45; color: #94a3b8;'>{len(csv_files)} CSV files<div style='font-size: 11px; margin-top: 4px; color: #64748b;'>{csv_names_html}</div></td>"
+            f"<td style='padding: 10px 12px; border-bottom: 1px solid #1f2c45; text-align: right; color: #cbd5e1;'>{csv_size}</td>"
+            f"</tr>"
+        )
+    if images_zip_data is not None or image_files:
+        img_size = _format_size(len(images_zip_data)) if images_zip_data else "N/A"
+        img_names_html = "<br/>".join([f"<code>{f['rel_path']}</code> ({f['size_display']})" for f in image_files])
+        attachments_html_rows.append(
+            f"<tr>"
+            f"<td style='padding: 10px 12px; border-bottom: 1px solid #1f2c45; color: #a78bfa; font-weight: 600;'>🖼️ images.zip</td>"
+            f"<td style='padding: 10px 12px; border-bottom: 1px solid #1f2c45; color: #94a3b8;'>{len(image_files)} plot/image files<div style='font-size: 11px; margin-top: 4px; color: #64748b;'>{img_names_html}</div></td>"
+            f"<td style='padding: 10px 12px; border-bottom: 1px solid #1f2c45; text-align: right; color: #cbd5e1;'>{img_size}</td>"
+            f"</tr>"
+        )
+    if pdf_info:
+        attachments_html_rows.append(
+            f"<tr>"
+            f"<td style='padding: 10px 12px; border-bottom: 1px solid #1f2c45; color: #f43f5e; font-weight: 600;'>📄 {pdf_info['filename']}</td>"
+            f"<td style='padding: 10px 12px; border-bottom: 1px solid #1f2c45; color: #94a3b8;'>Executive Quantitative Report (PDF)</td>"
+            f"<td style='padding: 10px 12px; border-bottom: 1px solid #1f2c45; text-align: right; color: #cbd5e1;'>{pdf_info['size_display']}</td>"
+            f"</tr>"
+        )
+
+    findings_html_cards = []
+    if findings.get("current_regime") and findings.get("current_regime") != "Unknown":
+        findings_html_cards.append(
+            f"<div style='background: rgba(56, 189, 248, 0.08); border-left: 3px solid #38bdf8; padding: 10px 14px; margin-bottom: 10px; border-radius: 4px;'>"
+            f"<strong style='color: #38bdf8;'>Market Regime Status:</strong> "
+            f"<span style='color: #e2e8f0;'>Current detected regime is <strong>{findings['current_regime']}</strong> "
+            f"({findings.get('current_regime_model', 'N/A')} model, as of {findings.get('regime_date', 'N/A')}).</span>"
+            f"</div>"
+        )
+    if strat:
+        findings_html_cards.append(
+            f"<div style='background: rgba(16, 185, 129, 0.08); border-left: 3px solid #10b981; padding: 10px 14px; margin-bottom: 10px; border-radius: 4px;'>"
+            f"<strong style='color: #10b981;'>Adaptive Strategy Recommendation ({strat.get('regime')}):</strong> "
+            f"<div style='color: #cbd5e1; margin-top: 4px; font-size: 12px; line-height: 1.5;'>"
+            f"Position Size: <strong>{strat.get('position_size')}</strong> &bull; "
+            f"Stop Loss: <strong>{strat.get('stop_loss')}</strong> &bull; "
+            f"Take Profit: <strong>{strat.get('take_profit')}</strong> &bull; "
+            f"Signal Filter: <code>{strat.get('signal_filter')}</code><br/>"
+            f"<span style='color: #94a3b8; font-style: italic;'>{strat.get('description')}</span>"
+            f"</div></div>"
+        )
+    if bt:
+        findings_html_cards.append(
+            f"<div style='background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; padding: 10px 14px; margin-bottom: 10px; border-radius: 4px;'>"
+            f"<strong style='color: #f59e0b;'>Walk-Forward Backtest ({bt.get('total_folds')} Folds):</strong> "
+            f"<div style='color: #cbd5e1; margin-top: 4px; font-size: 12px;'>"
+            f"Average Outperformance: <strong>{bt.get('avg_outperformance_pct'):+.2f}%</strong> &bull; "
+            f"Fold Win Rate: <strong>{bt.get('win_rate_pct'):.1f}%</strong>"
+            f"</div></div>"
+        )
+    if fc:
+        findings_html_cards.append(
+            f"<div style='background: rgba(167, 139, 250, 0.08); border-left: 3px solid #a78bfa; padding: 10px 14px; margin-bottom: 10px; border-radius: 4px;'>"
+            f"<strong style='color: #a78bfa;'>60-Day Forward Forecast:</strong> "
+            f"<div style='color: #cbd5e1; margin-top: 4px; font-size: 12px;'>"
+            f"Near-Term (Day 1): <strong>{fc.get('day_1_regime')}</strong> ({fc.get('day_1_prob_pct'):.1f}%) &bull; "
+            f"Terminal Horizon (Day 60): <strong>{fc.get('day_60_regime')}</strong> ({fc.get('day_60_prob_pct'):.1f}%)"
+            f"</div></div>"
+        )
+    if not findings_html_cards:
+        findings_html_cards.append(
+            "<p style='color: #94a3b8; font-size: 13px;'>All analytical output files and visualizations have been generated successfully.</p>"
+        )
 
     html_content = f"""\
 <!DOCTYPE html>
@@ -156,13 +599,13 @@ def create_report_email(
 <meta charset="utf-8">
 <style>
   body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0b1120; color: #e2e8f0; margin: 0; padding: 20px; }}
-  .card {{ background-color: #111a2e; border: 1px solid #1f2c45; border-radius: 10px; max-width: 640px; margin: 0 auto; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }}
+  .card {{ background-color: #111a2e; border: 1px solid #1f2c45; border-radius: 10px; max-width: 660px; margin: 0 auto; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }}
   .header {{ background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); padding: 24px; border-bottom: 1px solid #1f2c45; }}
   .title {{ margin: 0; font-size: 20px; font-weight: 700; color: #ffffff; letter-spacing: -0.3px; }}
   .subtitle {{ margin: 6px 0 0; font-size: 13px; color: #94a3b8; }}
   .content {{ padding: 24px; }}
-  .badge {{ display: inline-block; background: rgba(79, 156, 249, 0.15); color: #4f9cf9; border: 1px solid rgba(79, 156, 249, 0.35); padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-bottom: 16px; }}
-  table {{ width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 13px; }}
+  .section-title {{ font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #38bdf8; margin: 20px 0 10px; }}
+  table {{ width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }}
   th {{ background: #0f172a; color: #94a3b8; text-align: left; padding: 8px 12px; border-bottom: 1px solid #1f2c45; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }}
   .footer {{ padding: 16px 24px; border-top: 1px solid #1f2c45; font-size: 11px; color: #64748b; text-align: center; background: #0f172a; }}
 </style>
@@ -174,22 +617,26 @@ def create_report_email(
       <p class="subtitle">Quantitative Multi-Asset Financial Intelligence &amp; Backtesting</p>
     </div>
     <div class="content">
-      <span class="badge">Report Archive Generated</span>
       <p style="margin-top: 0; font-size: 14px; line-height: 1.6; color: #cbd5e1;">
-        All files and folders from the <code>backend/output</code> folder are attached to this email.
-        A complete archive is also bundled as <strong>output_report.zip</strong> preserving full folder hierarchy.
+        Here are the report files and model outputs attached for your review:
       </p>
+
+      <div class="section-title">📎 Attachments Metadata</div>
       <table>
         <thead>
           <tr>
-            <th>File / Relative Path</th>
+            <th>Attachment</th>
+            <th>Contents</th>
             <th style="text-align: right;">Size</th>
           </tr>
         </thead>
         <tbody>
-          {file_rows_html}
+          {"".join(attachments_html_rows)}
         </tbody>
       </table>
+
+      <div class="section-title" style="margin-top: 24px;">📊 Key Findings &amp; Analytics Summary</div>
+      {"".join(findings_html_cards)}
     </div>
     <div class="footer">
       Generated automatically by QMAFIB Platform &bull; Research &amp; Historical Analysis
@@ -201,51 +648,31 @@ def create_report_email(
     alt_part.attach(MIMEText(html_content, "html", "utf-8"))
     msg.attach(alt_part)
 
-    # 1. Attach the consolidated ZIP archive
-    zip_part = MIMEApplication(zip_data, _subtype="zip")
-    zip_part.add_header("Content-Disposition", "attachment", filename="output_report.zip")
-    msg.attach(zip_part)
+    # 1. Attach CSV Zip Archive (if present)
+    if csv_zip_data:
+        part = MIMEApplication(csv_zip_data, _subtype="zip")
+        part.add_header("Content-Disposition", "attachment", filename="csv_files.zip")
+        msg.attach(part)
 
-    # 2. Attach individual files directly
-    for f in files:
-        file_path = f["full_path"]
-        mime_type, _ = mimetypes.guess_type(str(file_path))
-        if mime_type is None:
-            mime_type = "application/octet-stream"
+    # 2. Attach Images Zip Archive (if present)
+    if images_zip_data:
+        part = MIMEApplication(images_zip_data, _subtype="zip")
+        part.add_header("Content-Disposition", "attachment", filename="images.zip")
+        msg.attach(part)
 
-        maintype, subtype = mime_type.split("/", 1)
-        try:
-            with open(file_path, "rb") as fp:
-                file_bytes = fp.read()
-
-            if maintype == "text":
-                part = MIMEText(file_bytes.decode("utf-8", errors="replace"), _subtype=subtype)
-            elif maintype == "image":
-                part = MIMEBase(maintype, subtype)
-                part.set_payload(file_bytes)
-                email.encoders.encode_base64(part)
-            else:
-                part = MIMEApplication(file_bytes, _subtype=subtype)
-
-            # Sanitize attachment filename (flatten folder names if in subfolder)
-            attachment_name = f["rel_path"].replace("/", "_").replace("\\", "_")
-            part.add_header("Content-Disposition", "attachment", filename=attachment_name)
-            msg.attach(part)
-        except Exception:
-            # If an individual file fails to attach, the ZIP archive already contains it
-            continue
+    # 3. Attach Report.pdf (if present)
+    if pdf_info and pdf_info.get("full_path") and Path(pdf_info["full_path"]).is_file():
+        with open(pdf_info["full_path"], "rb") as fp:
+            pdf_bytes = fp.read()
+        part = MIMEApplication(pdf_bytes, _subtype="pdf")
+        part.add_header("Content-Disposition", "attachment", filename=pdf_info["filename"])
+        msg.attach(part)
 
     return msg
 
 
 def _display_path(path: Path) -> str:
-    """Render a saved path relative to ``backend/`` when it lives there.
-
-    ``relative_to`` raises ``ValueError`` for anything outside that tree, which
-    reached the route as a 400 and reported "invalid email address" for a
-    perfectly valid one. The tidier relative form is a presentation detail and
-    should never be able to fail the send that already happened.
-    """
+    """Render a saved path relative to ``backend/`` when it lives there."""
     try:
         return str(path.relative_to(_BACKEND_DIR))
     except ValueError:
@@ -253,13 +680,7 @@ def _display_path(path: Path) -> str:
 
 
 def send_report_email(to_email: str) -> dict[str, Any]:
-    """Validate email, package backend/output files, and send via SMTP.
-
-    The recipient is checked against the allowlist here as well as in the route.
-    That is deliberate duplication: this function is exported, it attaches
-    everything under ``backend/output``, and the next caller to import it will
-    not have the route's dependencies in front of it.
-    """
+    """Validate email, package CSVs and images into separate ZIPs, attach Report.pdf, and send via SMTP."""
     from .security import recipient_allowed
 
     clean_email = to_email.strip()
@@ -272,8 +693,13 @@ def send_report_email(to_email: str) -> dict[str, Any]:
         )
 
     output_dir = get_output_dir()
-    files = collect_output_files(output_dir)
-    zip_data = build_zip_archive(output_dir, files)
+    csv_files = collect_csv_files(output_dir)
+    image_files = collect_image_files(output_dir)
+    pdf_info = get_report_pdf(output_dir)
+
+    csv_zip_data = build_csv_zip(output_dir, csv_files) if csv_files else b""
+    images_zip_data = build_images_zip(output_dir, image_files) if image_files else b""
+    findings = extract_report_findings(output_dir)
 
     # SMTP configuration
     smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com").strip()
@@ -284,7 +710,16 @@ def send_report_email(to_email: str) -> dict[str, Any]:
     smtp_use_tls = os.environ.get("SMTP_USE_TLS", "true").lower() in ("true", "1", "yes")
     smtp_use_ssl = os.environ.get("SMTP_USE_SSL", "false").lower() in ("true", "1", "yes") or smtp_port == 465
 
-    msg = create_report_email(clean_email, files, zip_data, from_email=smtp_from)
+    msg = create_report_email(
+        to_email=clean_email,
+        from_email=smtp_from,
+        csv_zip_data=csv_zip_data if csv_files else None,
+        csv_files=csv_files,
+        images_zip_data=images_zip_data if image_files else None,
+        image_files=image_files,
+        pdf_info=pdf_info,
+        findings=findings,
+    )
 
     # Dispatch via SMTP
     sent_via_smtp = False
@@ -323,12 +758,26 @@ def send_report_email(to_email: str) -> dict[str, Any]:
     if not sent_via_smtp and smtp_error:
         raise RuntimeError(f"SMTP dispatch failed ({smtp_host}:{smtp_port}): {smtp_error}")
 
+    all_files = csv_files + image_files + ([pdf_info] if pdf_info else [])
+    attachments = []
+    if csv_files:
+        attachments.append({"name": "csv_files.zip", "size_bytes": len(csv_zip_data), "count": len(csv_files)})
+    if image_files:
+        attachments.append({"name": "images.zip", "size_bytes": len(images_zip_data), "count": len(image_files)})
+    if pdf_info:
+        attachments.append({"name": pdf_info["filename"], "size_bytes": pdf_info["size_bytes"], "count": 1})
+
     return {
         "status": "success",
         "message": f"Report successfully sent to {clean_email}",
         "recipient": clean_email,
-        "files_count": len(files),
-        "files": [f["rel_path"] for f in files],
-        "zip_size_bytes": len(zip_data),
+        "attachments": attachments,
+        "files_count": len(all_files),
+        "files": [f["rel_path"] for f in all_files],
+        "csv_zip_size_bytes": len(csv_zip_data),
+        "images_zip_size_bytes": len(images_zip_data),
+        "pdf_size_bytes": pdf_info["size_bytes"] if pdf_info else 0,
+        "findings": findings,
         "saved_local_copy": _display_path(eml_path),
     }
+
