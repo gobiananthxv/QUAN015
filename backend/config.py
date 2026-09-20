@@ -63,7 +63,7 @@ REGIME_LABELS = {
     "bear": "Bear",
     "high_vol": "High-Volatility",
     "sideways": "Sideways",
-    "unknown": "Unknown",
+    "unknown": "Transitional",
 }
 
 # Thresholds used by RegimeLabeler to assign semantic names
@@ -109,6 +109,14 @@ STRATEGY_PARAMS: Dict[str, Dict[str, Any]] = {
         "leverage": 0.7,
         "description": "Mostly invested, range-bound / oscillator-based signals.",
     },
+    "Transitional": {
+        "position_size": 0.50,
+        "stop_loss_pct": 0.03,
+        "take_profit_pct": 0.10,
+        "signal_filter": "neutral",
+        "leverage": 0.5,
+        "description": "Transitional / structural shift state: conservative half-exposure.",
+    },
     "Unknown": {
         "position_size": 0.50,
         "stop_loss_pct": 0.03,
@@ -134,8 +142,10 @@ REGIME_COLORS = {
     "Bear": "#e74c3c",
     "High-Volatility": "#f39c12",
     "Sideways": "#3498db",
-    "Unknown": "#95a5a6",
+    "Transitional": "#8b5cf6",
+    "Unknown": "#8b5cf6",
 }
+
 
 FIGURE_DPI = 150
 FIGURE_STYLE = "seaborn-v0_8-darkgrid"

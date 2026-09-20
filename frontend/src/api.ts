@@ -203,6 +203,38 @@ export interface RegimeRow {
   beat_benchmark: boolean
 }
 
+export interface RegimeForecastRow {
+  day: number
+  [regime: string]: number
+}
+
+export interface RegimeConfidenceDecay {
+  day: number
+  max_prob: number
+  kl_div: number
+  entropy: number
+  top_regime: string
+  is_useful: boolean
+}
+
+export interface RegimeForecast {
+  asset: string
+  ticker: string
+  current_regime: string
+  n_states: number
+  regimes: string[]
+  days: number
+  horizon: {
+    conservative: number
+    max_prob_horizon: number
+    kl_horizon: number
+  }
+  stationary: Record<string, number>
+  rows: RegimeForecastRow[]
+  decay: RegimeConfidenceDecay[]
+  period: Period
+}
+
 // ------------------------------------------------ news sentiment
 
 export interface ArticleMetadata {
@@ -442,6 +474,13 @@ export const api = {
   regimeAttribution: (asset: string, strategy: string, period: Period = {}) =>
     request<{ rows: RegimeRow[] }>(
       `/api/backtest/regime-attribution?asset=${asset}&strategy=${strategy}` +
+        (period.start ? `&start=${period.start}` : '') +
+        (period.end ? `&end=${period.end}` : ''),
+    ),
+
+  regimeForecast: (asset: string, days = 60, period: Period = {}) =>
+    request<RegimeForecast>(
+      `/api/forecast/regime?asset=${asset}&days=${days}` +
         (period.start ? `&start=${period.start}` : '') +
         (period.end ? `&end=${period.end}` : ''),
     ),

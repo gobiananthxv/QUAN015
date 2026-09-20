@@ -46,7 +46,7 @@ class RegimeLabeler:
     """
 
     # Priority of regime assignment (highest → lowest)
-    _PRIORITY = ["High-Volatility", "Bear", "Bull", "Sideways", "Unknown"]
+    _PRIORITY = ["High-Volatility", "Bear", "Bull", "Sideways", "Transitional"]
 
     def __init__(self, feature_names: List[str]) -> None:
         self.feature_names = feature_names
@@ -86,7 +86,7 @@ class RegimeLabeler:
         """Map raw integer cluster IDs to semantic regime name strings."""
         if not self._label_map:
             raise RuntimeError("Labeler not fitted. Call fit() first.")
-        return pd.Series(raw_labels).map(self._label_map).fillna("Unknown")
+        return pd.Series(raw_labels).map(self._label_map).fillna("Transitional")
 
     def fit_transform(
         self,
@@ -170,6 +170,7 @@ class RegimeLabeler:
                     assigned[candidate] = cid
                     break
             else:
-                label_map[cid] = "Unknown"
+                label_map[cid] = "Transitional"
 
         return label_map
+

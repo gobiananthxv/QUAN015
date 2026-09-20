@@ -823,3 +823,19 @@ def test_windowed_regime_labels_stay_inside_the_window():
 def test_an_empty_window_is_rejected_everywhere(path):
     """Consistently 422 rather than an empty chart or a stack trace."""
     assert client.get(path).status_code == 422
+
+
+def test_regime_forecast_returns_valid_structure():
+    r = client.get("/api/forecast/regime?asset=NVDA&days=30")
+    assert r.status_code == 200, r.text
+    body = strict_json(r)
+    assert body["asset"] == "NVDA"
+    assert body["days"] == 30
+    assert len(body["rows"]) == 30
+    assert "conservative" in body["horizon"]
+    assert len(body["regimes"]) > 0
+    for row in body["rows"]:
+        assert "day" in row
+        prob_sum = sum(row[reg] for reg in body["regimes"])
+        assert 0.99 <= prob_sum <= 1.01
+

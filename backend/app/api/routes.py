@@ -516,6 +516,87 @@ def get_regime_attribution(
     )
 
 
+_DETECTOR_CACHE: dict[tuple[str, str, str | None], object] = {}
+
+
+def _clean_regime(name: str) -> str:
+    return "Transitional" if name == "Unknown" else name
+
+
+@router.get("/forecast/regime")
+def get_regime_forecast(
+    asset: str,
+    days: int = Query(60, ge=5, le=365),
+    start: str | None = None,
+    end: str | None = None,
+) -> dict:
+    """Predict future market regimes using the HMM transition matrix from forecast_regime."""
+    import sys
+    from pathlib import Path
+
+    backend_root = str(Path(__file__).resolve().parent.parent.parent)
+    if backend_root not in sys.path:
+        sys.path.insert(0, backend_root)
+
+    from regime.detector import RegimeDetector
+    from forecast.regime_forecaster import RegimeForecaster
+
+    key = _asset_or_404(asset)
+    asset_obj = get_asset(key)
+    ticker = asset_obj.ticker or key
+    start_date = start or "2010-01-01"
+
+    cache_key = (ticker, start_date, end)
+    try:
+        if cache_key not in _DETECTOR_CACHE:
+            detector = RegimeDetector(ticker=ticker, model_type="hmm")
+            result = detector.run(start=start_date, end=end)
+            _DETECTOR_CACHE[cache_key] = result
+        else:
+            result = _DETECTOR_CACHE[cache_key]
+
+        forecaster = RegimeForecaster(result)
+        forecast_df = forecaster.forecast(n_steps=days)
+        decay_df = forecaster.confidence_decay(n_steps=days)
+        stat_dist = forecaster.stationary_distribution()
+        horizon = forecaster.prediction_horizon(n_steps=max(days * 2, 60))
+
+        regimes = [_clean_regime(c) for c in forecast_df.columns]
+        rows = [
+            {"day": int(idx), **{_clean_regime(col): float(val) for col, val in row.items()}}
+            for idx, row in forecast_df.iterrows()
+        ]
+        decay_rows = [
+            {
+                "day": int(idx),
+                "max_prob": float(row["max_prob"]),
+                "kl_div": float(row["kl_div"]),
+                "entropy": float(row["entropy"]),
+                "top_regime": _clean_regime(str(row["top_regime"])),
+                "is_useful": bool(row["is_useful"]),
+            }
+            for idx, row in decay_df.iterrows()
+        ]
+
+        return clean({
+            "asset": key,
+            "ticker": ticker,
+            "current_regime": _clean_regime(result.current_regime),
+            "n_states": result.n_states,
+            "regimes": regimes,
+            "days": days,
+            "horizon": horizon,
+            "stationary": {_clean_regime(k): float(v) for k, v in stat_dist.items()},
+            "rows": rows,
+            "decay": decay_rows,
+            "period": {"start": start, "end": end},
+        })
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to compute regime forecast: {exc}") from None
+
+
+
+
 DEFAULT_GRIDS = {
     "sma_crossover": {"fast": [10, 20, 30, 50, 80], "slow": [100, 150, 200, 250]},
     "ema_trend": {"span": [20, 35, 50, 75, 100], "band": [0.0, 0.005, 0.01, 0.02, 0.03]},
